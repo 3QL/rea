@@ -6,6 +6,7 @@ import { snapshotAndroidTarget } from "../../dist/android/AndroidTargetSnapshot.
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
 import { XML_BYTES } from "./hierarchy.mjs";
+import { acquireFixtureLease } from "./lease.mjs";
 
 export const FIXTURE_PACKAGE = "com.rea.ui.probe";
 const CLI = resolve(import.meta.dirname, "../../scripts/rea.mjs");
@@ -13,7 +14,19 @@ const REQUEST_MS = 120_000;
 
 /** Own the admitted APK, installation attempt and MCP session through cleanup. */
 export async function withFixture(
-  { apk, aapt2, output, serial, environment, client, transport, run, signal },
+  {
+    apk,
+    aapt2,
+    output,
+    serial,
+    environment,
+    client,
+    transport,
+    run,
+    signal,
+    settleCommands,
+    leaseDirectory,
+  },
   work,
 ) {
   const invoke = async (name, input, requestSignal) => {
@@ -48,6 +61,7 @@ export async function withFixture(
     };
   };
   let owner;
+  let lease;
   let value;
   let failed = false;
   let primary;
@@ -101,6 +115,12 @@ export async function withFixture(
       "1",
       "This experiment requires an emulator",
     );
+    lease = await acquireFixtureLease({
+      serial,
+      packageName,
+      output,
+      directory: leaseDirectory,
+    });
     const initial = await inventory(packageName, signal);
     assert.equal(
       initial.present,
@@ -115,6 +135,7 @@ export async function withFixture(
       source: admitted,
       inspection,
       initially_absent: initial.evidence,
+      lease: { path: lease.path, ...lease.record },
     };
     await writeFile(
       cleanupPath,
@@ -147,7 +168,14 @@ export async function withFixture(
 
   const failures = [];
   const cleanupResources = new Set();
-  if (owner) {
+  let commandsSettled = false;
+  try {
+    await settleCommands();
+    commandsSettled = true;
+  } catch (cause) {
+    failures.push(cause);
+  }
+  if (owner && commandsSettled) {
     try {
       // Workflow cancellation must not cancel reconciliation or uninstall. One
       // fresh deadline bounds the entire device-cleanup sequence.
@@ -184,6 +212,15 @@ export async function withFixture(
       cleanupResources.add(resource);
     }
   }
+  if (lease && commandsSettled && !owner && failures.length === 0) {
+    try {
+      await lease.release();
+      lease = undefined;
+    } catch (cause) {
+      failures.push(cause);
+    }
+  }
+  if (lease) cleanupResources.add(lease);
   if (failures.length) {
     const error = new AggregateError(
       [...(failed ? [primary] : []), ...failures],
@@ -192,6 +229,7 @@ export async function withFixture(
     );
     // Keep the exact device/package and APK identity available for recovery.
     error.cleanupOwner = owner;
+    error.cleanupLease = lease;
     error.cleanupResources = cleanupResources;
     throw error;
   }

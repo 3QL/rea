@@ -8,7 +8,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { createEvidence } from "../../dist/domain/evidence.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
-import { withCommands } from "../command-scope.mjs";
+import { settleCommandOwners, withCommands } from "../command-scope.mjs";
 import { FIXTURE_PACKAGE, withFixture } from "./fixture.mjs";
 
 const identity = {
@@ -33,7 +33,6 @@ const evidence = (operation, parameters, result) =>
 // scripted to reproduce failures a successful emulator run cannot establish.
 async function harness(t, settings = {}) {
   const root = await mkdtemp(join(tmpdir(), "rea-ui-lifecycle-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const apk = join(root, "source.apk");
   const output = join(root, "result");
   await mkdir(output);
@@ -44,7 +43,7 @@ async function harness(t, settings = {}) {
     uninstalls: 0,
     inventories: 0,
     commands: [],
-    calls: [],
+    retainedLeases: [],
   };
   const server = new McpServer({ name: "ui-lifecycle-fixture", version: "1" });
   const client = new Client({ name: "ui-lifecycle-test", version: "1" });
@@ -58,7 +57,6 @@ async function harness(t, settings = {}) {
       name,
       { inputSchema: toolContract(name).inputSchema },
       async (input, context) => {
-        state.calls.push(name);
         let result;
         if (name === "resolve_adb_packages") {
           state.inventories++;
@@ -115,6 +113,8 @@ async function harness(t, settings = {}) {
   t.after(async () => {
     await client.close();
     await server.close();
+    for (const lease of state.retainedLeases) await lease.release();
+    await rm(root, { recursive: true, force: true });
   });
   const run = async (command, args) => {
     state.commands.push({ command, args });
@@ -150,7 +150,8 @@ async function harness(t, settings = {}) {
             serial: args[2],
             apk_path: snapshot,
             ...(await hashStableFile(snapshot)),
-            replaced: false,
+            replace_requested: false,
+            replaced: null,
           },
         ),
       ),
@@ -168,6 +169,8 @@ async function harness(t, settings = {}) {
     transport,
     run,
     signal: new AbortController().signal,
+    settleCommands: async () => {}, // Scripted commands have no live children.
+    leaseDirectory: join(root, "leases"),
   };
   return { options, state };
 }
@@ -237,6 +240,7 @@ test("partial post-uninstall inventory cannot prove cleanup or discard the retai
       assert.match(error.errors[0].message, /incomplete/u);
       assert.equal(error.cleanupOwner.package, FIXTURE_PACKAGE);
       assert.equal(error.cleanupOwner.serial, "emulator-5554");
+      h.state.retainedLeases.push(error.cleanupLease);
       return true;
     },
   );
@@ -269,6 +273,7 @@ test("retains the verification failure alongside uninstall and close failures", 
         assert.match(error.errors[1].message, /device offline/u);
         assert.equal(error.errors[2], closeError);
         assert.equal(error.cleanupOwner.package, FIXTURE_PACKAGE);
+        h.state.retainedLeases.push(error.cleanupLease);
         return true;
       },
     );
@@ -289,6 +294,7 @@ test("failed connection still attempts both closes and preserves all failures", 
         output: "/unused",
         environment: {},
         signal: new AbortController().signal,
+        settleCommands: async () => {},
         client: {
           connect: async () => {
             throw failures[0];
@@ -328,8 +334,8 @@ test(
         cancelled.resolve();
       },
     });
-    const pending = withCommands((_run, signal) =>
-      withFixture({ ...h.options, signal }, ({ call }) =>
+    const pending = withCommands((_run, signal, settleCommands) =>
+      withFixture({ ...h.options, signal, settleCommands }, ({ call }) =>
         call("inspect_adb_window", { serial: h.options.serial }),
       ),
     );
@@ -342,3 +348,119 @@ test(
     assert.equal(h.state.installed, false);
   },
 );
+
+test("settles a retained installer before reconciling its late package commit", async (t) => {
+  const retained = new Set();
+  const primary = new Error("install command cancelled with pending cleanup");
+  const h = await harness(t, {
+    install(state) {
+      state.installed = false;
+      retained.add({
+        async stop() {
+          state.installed = true;
+          return { status: "terminated" };
+        },
+      });
+      throw primary;
+    },
+  });
+  h.options.settleCommands = () => settleCommandOwners(retained);
+  await assert.rejects(
+    withFixture(h.options, () => assert.fail("must not run")),
+    (error) => error === primary,
+  );
+  assert.equal(retained.size, 0);
+  assert.equal(h.state.uninstalls, 1);
+  assert.equal(h.state.installed, false);
+  assert.equal(
+    JSON.parse(
+      await readFile(join(h.options.output, "fixture-cleanup.json"), "utf8"),
+    ).status,
+    "absent",
+  );
+});
+
+test("unsettled installers retain package and lease identity without claiming absence", async (t) => {
+  const stopResult = {
+    status: "incomplete",
+    reason: "process identity is unresolved",
+    cleanupResult: {
+      cleaned: false,
+      reason: "cannot verify descendant start time",
+    },
+  };
+  const installer = { stop: async () => stopResult };
+  const retained = new Set([installer]);
+  const primary = new Error("install command timed out");
+  const h = await harness(t, {
+    install(state) {
+      state.installed = false;
+      throw primary;
+    },
+  });
+  h.options.settleCommands = () => settleCommandOwners(retained);
+  await assert.rejects(
+    withFixture(h.options, () => assert.fail("must not run")),
+    asyncError,
+  );
+  function asyncError(error) {
+    assert.equal(error.cause, primary);
+    assert.equal(error.errors[1].errors[0].stopResult, stopResult);
+    assert.match(
+      error.errors[1].errors[0].message,
+      /process identity is unresolved/u,
+    );
+    assert.equal(error.errors[1].cleanupOwners, retained);
+    assert.equal(error.cleanupOwner.package, FIXTURE_PACKAGE);
+    h.state.retainedLeases.push(error.cleanupLease);
+    return true;
+  }
+  assert.equal(
+    h.state.inventories,
+    1,
+    "cleanup queried before the installer settled",
+  );
+  assert.equal(h.state.uninstalls, 0);
+  // Even if the outer scope's final retry later succeeds, no earlier absence
+  // observation may have discarded the package identity or released admission.
+  installer.stop = async () => {
+    h.state.installed = true;
+    return { status: "terminated" };
+  };
+  await settleCommandOwners(retained);
+  const journal = JSON.parse(
+    await readFile(join(h.options.output, "fixture-cleanup.json"), "utf8"),
+  );
+  assert.equal(journal.status, "install-attempted");
+  assert.equal(
+    JSON.parse(await readFile(journal.owner.lease.path, "utf8")).run_id,
+    journal.owner.lease.run_id,
+  );
+});
+
+test("a competing verifier cannot admit or uninstall the active run's fixture", async (t) => {
+  const first = await harness(t);
+  const second = await harness(t);
+  second.options.leaseDirectory = first.options.leaseDirectory;
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const active = withFixture(first.options, async () => {
+    started.resolve();
+    await finish.promise;
+  });
+  try {
+    await started.promise;
+    await assert.rejects(
+      withFixture(second.options, () => assert.fail("must not run")),
+      /Fixture lease is unavailable/u,
+    );
+    assert.equal(second.state.inventories, 0);
+    assert.equal(second.state.installs, 0);
+    assert.equal(second.state.uninstalls, 0);
+    assert.equal(first.state.installed, true);
+  } finally {
+    finish.resolve();
+    await active;
+  }
+  assert.equal(first.state.installed, false);
+});

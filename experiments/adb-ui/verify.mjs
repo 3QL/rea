@@ -34,7 +34,7 @@ const transport = new StdioClientTransport({
 });
 transport.stderr?.resume();
 const receipts = [];
-const receipt = await withCommands((run, signal) =>
+const receipt = await withCommands((run, signal, settleCommands) =>
   withFixture(
     {
       apk: values.apk,
@@ -46,6 +46,7 @@ const receipt = await withCommands((run, signal) =>
       transport,
       run,
       signal,
+      settleCommands,
     },
     async ({ call, adb, installation, fixture }) => {
       const packageName = fixture.package;

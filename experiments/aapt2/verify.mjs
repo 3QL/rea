@@ -45,27 +45,49 @@ const selectedFramework = {
   ...(await identity(values.framework)),
 };
 const commands = [];
+const failureRecord = (cause) => {
+  if (cause instanceof Error)
+    return {
+      message: cause.message,
+      ...("reason" in cause && typeof cause.reason === "string"
+        ? { reason: cause.reason }
+        : {}),
+    };
+  return { message: String(cause) };
+};
 const env = {
   ...process.env,
   REA_APKTOOL_COMMAND: resolve(values.apktool),
   JAVA_TOOL_OPTIONS: "-Xmx512m",
 };
-await withCommands(async (run) => {
+await withCommands(async (run, signal) => {
   const command = async (binary, args, options = {}) => {
     const started = performance.now();
-    const result = await run(binary, args, {
-      environment: env,
-      timeoutMs: 120_000,
-      maxBytes: 4 * 1024 * 1024,
-      ...options,
-    });
-    commands.push({
-      binary,
-      arguments: args,
-      elapsed_ms: performance.now() - started,
-      ...result,
-    });
-    return result;
+    try {
+      const result = await run(binary, args, {
+        environment: env,
+        timeoutMs: 120_000,
+        maxBytes: 4 * 1024 * 1024,
+        ...options,
+      });
+      commands.push({
+        binary,
+        arguments: args,
+        outcome: "completed",
+        elapsed_ms: performance.now() - started,
+        ...result,
+      });
+      return result;
+    } catch (cause) {
+      commands.push({
+        binary,
+        arguments: args,
+        outcome: "failed",
+        elapsed_ms: performance.now() - started,
+        error: failureRecord(cause),
+      });
+      throw cause;
+    }
   };
   const aapt2 = resolve(values.aapt2);
   const apktool = resolve(values.apktool);
@@ -191,7 +213,7 @@ await withCommands(async (run) => {
     await client.connect(transport);
     const reply = await client.callTool(
       { name: "decode_android_resources", arguments: { path: apk } },
-      { timeout: 120_000 },
+      { timeout: 120_000, signal },
     );
     assert.notEqual(reply.isError, true, JSON.stringify(reply));
     const text = reply.content.find((part) => part.type === "text")?.text;
@@ -219,6 +241,7 @@ await withCommands(async (run) => {
     JSON.stringify(
       {
         scope: "unshipped prototype",
+        outcome: "completed",
         version,
         apktool_version: apktoolVersion,
         framework: selectedFramework,
@@ -241,4 +264,19 @@ await withCommands(async (run) => {
   console.log(
     "AAPT2 prototype: inspection, compile/link, caller-selected Apktool rebuild, negative inputs and existing decode CLI/MCP parity passed",
   );
+}).catch(async (cause) => {
+  await writeFile(
+    join(output, "receipt.json"),
+    JSON.stringify(
+      {
+        scope: "unshipped prototype",
+        outcome: "failed",
+        failure: failureRecord(cause),
+        commands,
+      },
+      null,
+      2,
+    ),
+  );
+  throw cause;
 });

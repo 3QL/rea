@@ -31,16 +31,12 @@ export const createBinarySession = (
   const hopper = new HopperProvider(config, logger, environment);
   const ghidra = new GhidraProvider(config, logger, environment);
   const ida = new IdaProvider(config, environment);
-  assertBinaryLaneProviderIds([
-    hopper.identity().id,
-    ghidra.identity().id,
-    ida.identity().id,
-  ]);
+  const laneProviders = [hopper, ghidra, ida];
+  assertBinaryLaneProviderIds(
+    laneProviders.map((provider) => provider.identity().id),
+  );
   return composeBinarySession(
-    new AnalysisProviderRegistry(
-      [hopper, ghidra, ida],
-      config.analysisProvider,
-    ),
+    new AnalysisProviderRegistry(laneProviders, config.analysisProvider),
     auxiliaryAnalysisProviderDeclarations(environment).map(
       (declaration) => new LazyAnalysisProvider(declaration),
     ),

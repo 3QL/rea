@@ -5,7 +5,6 @@ import { resolveAdbBinary } from "../../dist/adb/AdbConfiguration.js";
 import { snapshotAndroidTarget } from "../../dist/android/AndroidTargetSnapshot.js";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
-import { XML_BYTES } from "./hierarchy.mjs";
 import { acquireFixtureLease } from "./lease.mjs";
 
 export const FIXTURE_PACKAGE = "com.rea.ui.probe";
@@ -73,7 +72,6 @@ export async function withFixture(
     const selection = resolveAdbBinary(environment);
     const adb = (args) =>
       run(selection.binary, ["-s", serial, ...args], {
-        maxBytes: XML_BYTES,
         environment,
       });
     await client.connect(transport, { timeout: REQUEST_MS, signal });

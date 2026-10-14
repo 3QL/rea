@@ -6,7 +6,6 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { withCommands } from "../command-scope.mjs";
-import { projectDump, uniqueControl, actionPoints } from "./hierarchy.mjs";
 import { REA_CLI_PATH, withFixture } from "./fixture.mjs";
 
 const { values } = parseArgs({
@@ -48,126 +47,278 @@ const receipt = await withCommands((run, signal, settleCommands) =>
       signal,
       settleCommands,
     },
-    async ({ call, adb, installation, fixture }) => {
+    async ({ call, installation, fixture }) => {
       const packageName = fixture.package;
-      let screens = 0;
-      const capture = () =>
-        call("capture_adb_screen", {
-          serial,
-          output_directory: join(output, `screen-${screens++}`),
+      const scope = { serial, package: packageName };
+      const observed = async (name, input) => {
+        const started = performance.now();
+        const evidence = await call(name, input);
+        receipts.push({ elapsed_ms: performance.now() - started, evidence });
+        await writeFile(
+          join(output, `observation-${receipts.length}.json`),
+          JSON.stringify(evidence, null, 2),
+          { flag: "wx" },
+        );
+        assert.equal(evidence.authority, "controlled-replay");
+        return evidence;
+      };
+      const find = async (selector, options = {}) =>
+        (
+          await observed("find_adb_ui_elements", {
+            ...scope,
+            selector,
+            ...options,
+          })
+        ).normalized_result;
+      const byId = (name) => find({ resource_id: `${packageName}:id/${name}` });
+      const act = async (selection, elementId, action) => {
+        const evidence = await observed("perform_adb_ui_action", {
+          ...scope,
+          snapshot_id: selection.snapshot.id,
+          ...(elementId === undefined ? {} : { element_id: elementId }),
+          action,
         });
-      await call("start_adb_app", { serial, package: packageName });
-      const cliFocus = await run(process.execPath, [
-        REA_CLI_PATH,
-        "inspect-adb-window",
-        serial,
-        "--json",
-      ]);
-      const cliEvidence = toolContract("inspect_adb_window").outputSchema.parse(
-        JSON.parse(cliFocus.stdout),
-      );
-      const mcpEvidence = await call("inspect_adb_window", { serial });
-      assert.deepEqual(
-        cliEvidence.normalized_result,
-        mcpEvidence.normalized_result,
-      );
-      const focus = async (expected = packageName) => {
-        const evidence = await call("inspect_adb_window", { serial });
-        assert(
-          evidence.normalized_result.focused_window?.includes(` ${expected}/`),
-          "Foreground target is unresolved or changed",
+        assert.equal(
+          evidence.normalized_result.action_completed,
+          true,
+          JSON.stringify(evidence),
         );
         return evidence;
       };
-      const hierarchy = async () => {
-        const started = performance.now();
-        const capturedAt = new Date().toISOString();
-        const captured = await adb([
-          "exec-out",
-          "uiautomator",
-          "dump",
-          "--compressed",
-          "/proc/self/fd/1",
-        ]);
-        const parsed = projectDump(captured.stdout);
-        if (!parsed.ok) throw new Error(parsed.error.reason);
-        receipts.push({
-          kind: "hierarchy",
-          captured_at: capturedAt,
-          elapsed_ms: performance.now() - started,
-          bytes: Buffer.byteLength(captured.stdout),
-          snapshot: parsed.value,
+      const status = async (text) => {
+        const evidence = await observed("wait_for_adb_ui", {
+          ...scope,
+          selector: { text: { value: text, match: "exact" } },
+          condition: "present",
         });
-        return parsed.value;
+        assert.equal(
+          evidence.normalized_result.satisfied,
+          true,
+          JSON.stringify(evidence),
+        );
       };
-      const control = (snapshot, name) => {
-        const selected = uniqueControl(snapshot, packageName, name);
-        assert.equal(selected.ok, true, JSON.stringify(selected));
-        return selected.value;
+      const refused = async (input, kind) => {
+        const reply = await client.callTool(
+          { name: "perform_adb_ui_action", arguments: input },
+          { signal, timeout: 60000 },
+        );
+        assert.equal(reply.isError, true);
+        assert.match(JSON.stringify(reply), new RegExp(kind, "u"));
+        await writeFile(
+          join(output, `refusal-${kind}.json`),
+          JSON.stringify(reply, null, 2),
+          { flag: "wx" },
+        );
       };
-      const action = async (snapshot, name, kind) => {
-        const selected = control(snapshot, name);
-        // PNG dimensions are in current screen orientation; wm size can describe
-        // natural orientation instead. Retain the observation used for the guard.
-        const display = await capture();
-        const points = actionPoints(selected, display.normalized_result, kind);
-        assert.equal(points.ok, true, JSON.stringify(points));
-        const focusEvidence = await focus();
-        await adb([
-          "shell",
-          "input",
-          kind,
-          ...points.value.flatMap(({ x, y }) => [String(x), String(y)]),
-          ...(kind === "swipe" ? ["300"] : []),
-        ]);
-        receipts.push({
-          kind: `${kind}-dispatched`,
-          control: name,
-          points: points.value,
-          source_snapshot: snapshot.xml_sha256,
-          focus_evidence: focusEvidence,
-          display_evidence: display,
-        });
-      };
-      await assert.rejects(
-        () => focus("com.rea.not-the-target"),
-        /unresolved or changed/u,
+      await call("start_adb_app", { serial, package: packageName });
+      await status("Sign in");
+      const cliUi = await run(process.execPath, [
+        REA_CLI_PATH,
+        "inspect-adb-ui",
+        JSON.stringify(scope),
+        "--json",
+      ]);
+      const cliEvidence = toolContract("inspect_adb_ui").outputSchema.parse(
+        JSON.parse(cliUi.stdout),
       );
-      await action(await hierarchy(), "rea-tap", "tap");
-      assert.equal(
-        control(await hierarchy(), "rea-status").attributes.text,
-        "Tapped 1",
+      const retained = await find(
+        {},
+        { snapshot_id: cliEvidence.normalized_result.snapshot.id, limit: 500 },
       );
-      await action(await hierarchy(), "rea-input", "tap");
-      await focus();
-      await adb(["shell", "input", "text", "REA%stext"]);
-      assert.equal(
-        control(await hierarchy(), "rea-input").attributes.text,
-        "REA text",
+      assert.equal(retained.freshness, "retained_snapshot");
+      assert.deepEqual(
+        retained.matches,
+        cliEvidence.normalized_result.snapshot.nodes,
       );
-      await focus();
-      await adb(["shell", "input", "keyevent", "KEYCODE_BACK"]);
-      const before = await hierarchy();
-      await action(before, "rea-scroll", "swipe");
-      const after = await hierarchy();
-      const rows = (snapshot) =>
-        snapshot.nodes
-          .map((node) => node.attributes.text)
-          .filter((text) => /^Row \d+$/u.test(text ?? ""));
-      assert.notDeepEqual(rows(before), rows(after));
-      const screen = await capture();
-      assert(screen.normalized_result);
+      const signIn = await find({
+        text: { value: "Sign in", match: "exact" },
+        clickable: true,
+      });
+      assert.equal(signIn.total_matches, 1);
+      await act(signIn, signIn.matches[0].id, { kind: "tap" });
+      await status("Tapped 1");
+
+      const duplicates = await find(
+        { text: { value: "Duplicate", match: "exact" } },
+        { limit: 1 },
+      );
+      assert.equal(duplicates.total_matches, 2);
+      const second = await find(
+        { text: { value: "Duplicate", match: "exact" } },
+        {
+          snapshot_id: duplicates.snapshot.id,
+          offset: duplicates.next_offset,
+          limit: 1,
+        },
+      );
+      assert.notEqual(second.matches[0].id, duplicates.matches[0].id);
+      await act(second, second.matches[0].id, { kind: "tap" });
+      await status("Duplicate 1");
+
+      const disabled = await byId("disabled");
+      await refused(
+        {
+          ...scope,
+          snapshot_id: disabled.snapshot.id,
+          element_id: disabled.matches[0].id,
+          action: { kind: "tap" },
+        },
+        "unusable_element",
+      );
+      const stale = await byId("entry");
+      await byId("status");
+      await refused(
+        {
+          ...scope,
+          snapshot_id: stale.snapshot.id,
+          element_id: stale.matches[0].id,
+          action: { kind: "tap" },
+        },
+        "stale_snapshot",
+      );
+
+      let entry = await byId("entry");
+      const unicode = "REA Grüße 世界 🚀";
+      const text = await act(entry, entry.matches[0].id, {
+        kind: "set_text",
+        text: unicode,
+      });
+      assert.equal(text.normalized_result.text_verified, true);
+      assert.equal((await find({ text: { value: unicode } })).total_matches, 1);
+      entry = await byId("entry");
+      const secret = "rea-explicit-sensitive-value";
+      const sensitive = await act(entry, entry.matches[0].id, {
+        kind: "set_text",
+        text: secret,
+        sensitive: true,
+      });
+      assert.equal(sensitive.parameters.action.text, "[redacted]");
+      assert.equal(JSON.stringify(sensitive).includes(secret), false);
+      const hidden = await byId("entry");
+      assert.equal(hidden.matches[0].text_redacted, true);
+      assert.equal(hidden.matches[0].text, null);
+      const hiddenAbsent = await observed("wait_for_adb_ui", {
+        ...scope,
+        selector: { text: { value: "unobserved text" } },
+        condition: "absent",
+        timeout_ms: 200,
+      });
+      assert.equal(hiddenAbsent.normalized_result.coverage, "partial");
+      assert.equal(hiddenAbsent.normalized_result.satisfied, false);
+      const clear = await byId("entry");
+      await act(clear, clear.matches[0].id, { kind: "set_text", text: "" });
+
+      const parent = await find({ text: { value: "Continue" } });
+      assert.equal(parent.total_matches, 1);
+      assert(parent.matches[0].click_target_id);
+      await act(parent, parent.matches[0].click_target_id, { kind: "tap" });
+      await status("Continued");
+      let button = await byId("sign_in");
+      await act(button, button.matches[0].id, { kind: "long_press" });
+      await status("Long pressed");
+      button = await byId("sign_in");
+      await act(button, button.matches[0].id, { kind: "double_tap" });
+      await status("Tapped 3");
+
+      const snapshot = (await observed("inspect_adb_ui", scope))
+        .normalized_result.snapshot;
+      const source = snapshot.nodes.find(
+        (node) => node.resource_id === `${packageName}:id/drag_source`,
+      );
+      const destination = snapshot.nodes.find(
+        (node) => node.resource_id === `${packageName}:id/drag_destination`,
+      );
+      await act({ snapshot }, source.id, {
+        kind: "drag",
+        destination_id: destination.id,
+      });
+      await status("Dropped");
+      const initialScroll = (await observed("inspect_adb_ui", scope))
+        .normalized_result.snapshot;
+      const scroll = initialScroll.nodes.find(
+        (node) => node.resource_id === `${packageName}:id/scroll`,
+      );
+      const scrolled = await act({ snapshot: initialScroll }, scroll.id, {
+        kind: "scroll",
+        direction: "down",
+        percent: 0.75,
+      });
+      const rows = (nodes) =>
+        nodes
+          .filter((node) => node.visible && /^Row \d+$/u.test(node.text ?? ""))
+          .map((node) => node.text);
+      assert.notDeepEqual(
+        rows(initialScroll.nodes),
+        rows(scrolled.normalized_result.after.nodes),
+      );
+      const swiping = await byId("scroll");
+      await act(swiping, swiping.matches[0].id, {
+        kind: "swipe",
+        direction: "up",
+        percent: 0.5,
+      });
+      const key = await find({});
+      await act(key, undefined, { kind: "key_event", key_code: 61 });
+      const absent = await observed("wait_for_adb_ui", {
+        ...scope,
+        selector: { resource_id: `${packageName}:id/absent` },
+        condition: "absent",
+      });
+      assert.equal(absent.normalized_result.satisfied, true);
+      const timeout = await observed("wait_for_adb_ui", {
+        ...scope,
+        selector: { resource_id: `${packageName}:id/absent` },
+        timeout_ms: 200,
+      });
+      assert.equal(timeout.normalized_result.timed_out, true);
+      const limited = await observed("wait_for_adb_ui", {
+        ...scope,
+        selector: { resource_id: `${packageName}:id/absent` },
+        condition: "absent",
+        max_nodes: 1,
+        timeout_ms: 200,
+      });
+      assert.equal(limited.normalized_result.snapshot.coverage, "partial");
+      assert.equal(limited.normalized_result.satisfied, false);
+      const cancellation = new AbortController();
+      const waiting = client.callTool(
+        {
+          name: "wait_for_adb_ui",
+          arguments: {
+            ...scope,
+            selector: { resource_id: `${packageName}:id/absent` },
+            timeout_ms: 30000,
+          },
+        },
+        { signal: cancellation.signal, timeout: 45000 },
+      );
+      const rejected = assert.rejects(waiting);
+      const timer = setTimeout(() => cancellation.abort(), 300);
+      try {
+        await rejected;
+      } finally {
+        clearTimeout(timer);
+      }
+      await byId("status"); // Proves the prior request settled before later work.
+      const screen = await call("capture_adb_screen", {
+        serial,
+        output_directory: join(output, "screen"),
+      });
       return {
-        scope: "unshipped prototype",
+        scope: "public UI Automator CLI/MCP verification",
         serial,
         package: packageName,
         fixture,
         installation,
-        cli_mcp_focus_parity: true,
+        cli_mcp_snapshot_parity: true,
         tap_observed: true,
         text_observed: true,
-        swipe_observed: true,
-        keyevent_dispatched: true,
+        scroll_observed: true,
+        all_eight_primitives_completed: true,
+        duplicates_preserved: true,
+        disabled_and_stale_refused: true,
+        sensitive_text_redacted: true,
+        cancellation_settled: true,
         screenshot_evidence: screen,
         tokens: "unmeasured",
         process_family_peak: "unmeasured",
@@ -178,5 +329,5 @@ const receipt = await withCommands((run, signal, settleCommands) =>
 );
 await writeFile(join(output, "receipt.json"), JSON.stringify(receipt, null, 2));
 console.log(
-  "UI prototype: observed tap/text/swipe outcomes, key-event dispatch, CLI/MCP focus parity, screenshot and fixture cleanup passed",
+  "UI Automator: text/button discovery, eight primitives, Unicode, redaction, stale/disabled refusals, CLI/MCP parity, cancellation and cleanup passed",
 );

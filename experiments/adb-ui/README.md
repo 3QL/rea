@@ -1,109 +1,91 @@
-# ADB UI scope experiment
+# Android UI Automator verification
 
-This draft contains a small, unshipped UIAutomator/input experiment. It uses
-the existing `inspect_adb_window` observation supplied by main.
-New public UI mutation tools require the maintainer scope decision described in
-[CONTRIBUTING.md](../../CONTRIBUTING.md#contribution-scope).
+The original XML-dump/input experiment has been replaced by the public
+[UI Automator contracts](../../docs/adb-ui-automation.md). The operator starts
+the source-built runner from `bridge/adb-ui/`; these fixtures exercise actual
+CLI/MCP discovery and input, using isolated emulator applications.
 
-## Observed behavior
+## Native Android Views
 
-- Android 16/API 36 puts `mCurrentFocus` and `mFocusedApp` in display state, outside
-  `dumpsys window windows`. Main's reader falls back to `dumpsys window displays`
-  when neither focus declaration exists in `windows`. Both queries exclude the
-  historical ANR section. The prototype's full-dump parser has been superseded.
-- `uiautomator dump --compressed /proc/self/fd/1` streams the hierarchy and a
-  status footer without creating a device-side dump file. The projection keeps
-  parent relationships, attributes, bounds and the XML digest. Password-marked
-  text is excluded; ambiguous controls cannot supply action coordinates.
-- A source-built fixture demonstrated a tap counter change, ASCII text entry,
-  scrolling and BACK dispatch. Focus is checked before each input. These are
-  sequential observations, not an atomic guarantee against UI changes.
-- AAPT2 inspects an owned APK snapshot's manifest package, including resource-free
-  APKs. Existing CLI/MCP operations install/start those same bytes, inspect focus
-  and take a screenshot. Action points must fit both the selected control and
-  current screenshot dimensions; swipe endpoints scale with the control's height.
-- Exclusive admission is acquired before inspecting package absence. The lease
-  holder records its installation attempt before dispatch. Complete inventory is
-  required before installing and after cleanup. Retained installer processes
-  must settle before package reconciliation; otherwise both package identity and
-  the lease remain pending, even if a later process-cleanup retry succeeds.
-
-## Run
-
-Supply compatible existing Android tools, a framework JAR and D8 JAR. Outputs
-must be new directories outside the repository; generated APKs and keys are not
-source artifacts.
+With compatible caller-supplied Android tools and an already-running runner:
 
 ```sh
-npm ci
 npm run build:cached
-node --test experiments/adb-ui/*.test.mjs experiments/command-scope.test.mjs
 node experiments/adb-ui/build-fixture.mjs --aapt2 /tools/aapt2 \
   --framework /sdk/android.jar --d8 /sdk/d8.jar --output /lab/ui-fixture
 node experiments/adb-ui/verify.mjs --aapt2 /tools/aapt2 --serial emulator-5554 \
   --apk /lab/ui-fixture/ui-probe.apk --output /lab/ui-result
 ```
 
+The permission-free source fixture supplies editable text, duplicate buttons,
+a disabled control, a child label inside a clickable parent, a drag/drop target,
+and a scrollable list. The verifier checks text/button discovery, stable paging,
+explicit selection, tap/double-tap/long-press, Unicode replacement and clearing,
+sensitive-text handling, scroll/swipe/drag/key primitives, stale/disabled refusals,
+wait outcomes, cancellation, screenshots and CLI/MCP snapshot parity. A completed
+provider call and an observed application outcome are asserted separately.
+
+## Compose
+
+Build the separate Compose fixture with Gradle 8.9, JDK 17 and SDK 35:
+
+```sh
+gradle -p experiments/adb-ui/compose-fixture assembleDebug
+node experiments/adb-ui/verify-compose.mjs --aapt2 /tools/aapt2 --serial emulator-5554 \
+  --apk experiments/adb-ui/compose-fixture/build/outputs/apk/debug/rea-compose-fixture-debug.apk \
+  --output /lab/compose-result
+```
+
+This checks virtual/merged Compose semantics: text/button discovery, duplicate
+labels, resource IDs exposed by test tags, text replacement, disabled state and
+lazy-list scrolling. It observes the configured keyboard before explicitly
+dismissing it, and verifies its disappearance before scrolling. Use a new
+output directory for each run. Observations are
+saved individually, including those preceding a later failure.
+
+## Fixture ownership
+
 The verifier requires an emulator and refuses an already-installed
-`com.rea.ui.probe` package. The selected adb server follows the caller's normal
-ADB environment and canonical REA binary selection, including blank settings.
-CLI and MCP launches use this checkout's module-relative entrypoint, even when
-the verifier is launched from another directory. Caller-supplied relative APK
+`com.rea.ui.probe`. AAPT2 inspects a digest-bound private APK snapshot, and the
+same bytes are installed. CLI/MCP entrypoints are module-relative; caller APK
 and output paths remain relative to the launch directory.
-Workflow MCP calls share the command cancellation signal; cleanup uses a fresh
-120-second deadline. Primary, uninstall and close errors are aggregated, with
-unresolved owners retained. `fixture-cleanup.json` records the admitted identity
-before install and the complete absence observation after cleanup. Success is
-reported only after cleanup and session closure finish.
 
-Verifier processes in the same local OS account share a serial/package lease in
-that account's home under `.cache/rea/adb-ui-leases/`, independently of worktree,
-output directory, `HOME` overrides or ADB server spelling. Equal serials on
-different servers are conservatively serialized too. An existing lease refuses
-admission; it is never stolen based on PID, age or malformed contents. Cleanup
-removes only the file identity this run acquired, after commands, package cleanup
-and session closure succeed. Interrupted or unresolved runs leave the lease and
-their output journal for recovery: reconcile the recorded processes and device
-package before manually removing that lease. Independent ADB clients, other
-local accounts and other hosts do not participate; use a dedicated emulator.
+A persistent OS-account serial/package lease is acquired before the complete
+package-absence check. Installation ownership is recorded before dispatch.
+Retained host commands must settle before package reconciliation. Unknown
+cleanup retains the package identity, lease and original failure. Complete
+absence and session closure precede lease release and a success receipt.
 
-## Verification and remaining questions
+Leases live under the OS account's home in `.cache/rea/adb-ui-leases/`, shared
+across worktrees/output directories and independent of `HOME` overrides. Equal
+serials on different ADB servers are conservatively serialized too. They are
+not reclaimed from PID, age or malformed contents. Reconcile the recorded
+processes and package before manually removing a stranded lease. Independent
+ADB clients, other accounts and other hosts do not participate; use a dedicated
+emulator. The UI runner itself remains owned by the operator.
 
-Linux, adb 34.0.5, Android 16/API 36 x86-64 emulator, Node 24.18.0 and a source-built
-probe passed the live experiment. Seven projection tests, ten fixture lifecycle
-tests, two cross-process/file-lease tests and three command tests cover malformed XML, out-of-screen points, short
-swipes, ambiguous selection, marked-sensitive text, output truncation, package
-identity, source replacement, incomplete inventories, uncertain installs,
-aggregated failures, late installer settlement, concurrent admission and MCP cancellation. Lifecycle tests use real filesystem
-snapshots and in-memory MCP transport with scripted device/inspector outcomes;
-they do not establish real-provider behavior. Existing ADB provider/CLI/MCP
-regressions also pass. No new public CLI/MCP UI contract is registered yet.
+## Evidence and limits
 
-The post-review API 36 run also verified blank `REA_ADB_PATH` fallback and
-AAPT2 `2.19-10229193` package admission. A different real APK was refused before
-install. An ADB wrapper paused after a real successful install; SIGINT sent only
-to the verifier cancelled the host workflow and cleanup proved the package absent.
-Main's windows/displays fallback has its own provider regressions; live behavior
-on older Android versions remains unverified.
+The native View workflow passed on Linux, adb 34.0.5, Android 16/API 36 x86-64,
+UI Automator 2.4.0 and Node 24.18.0. Its 43 public UI observations covered all
+eight primitives, Unicode, redaction, stale/disabled rejection, cancellation and
+fixture cleanup, including incomplete-coverage and redacted-text absence checks.
+The Compose workflow also passed on that emulator: 22 public observations
+covered text/button discovery, duplicate labels, Unicode, disabled state,
+observed keyboard dismissal, lazy-list scrolling and fixture cleanup.
+Boundary tests separately exercise malformed replies, incorrect request
+identity, unavailable runners and retained cleanup/acknowledgement errors.
 
-After merging main, two real verifier processes also exercised admission: one
-paused before installing and the contender was refused without querying or
-changing package state. The owner then committed its install; verifier-only
-SIGINT led to complete package absence and lease removal. The updated full UI
-workflow also passed. Incomplete native cleanup is covered by scripted stop
-results, including a late commit on a later retry, rather than a forced live
-ownership failure.
+The warm native View workflow took 44.62 s elapsed and 25.08 s host CPU, with
+923,791,360 bytes peak host cgroup memory and verified host payload cleanup.
+The observer is included; documentation checks ran concurrently on the host.
+External emulator/ADB-server memory and CPU, cold runs, Compose resource costs
+and agent-token costs are unmeasured. Earlier XML-prototype measurements
+cover different work and are not comparative performance baselines.
 
-The merged warm-cache workflow took 44.99 s elapsed and 14.19 s host CPU, with an
-885,469,184-byte host cgroup memory peak. Payload-exit counters and host process
-cleanup were verified; final whole-scope counters disappeared after scope exit.
-The observer is included; the external ADB server/emulator and agent-token usage
-are unmeasured. The prior 37.93 s / 12.91 s / 867,192,832-byte run used an older
-REA runtime and a different emulator instance, so it is not a comparative
-baseline. Cold runs remain unmeasured.
-
-The experimental XML input budget is 1 MiB. Production graph/serialization limits,
-arbitrary Unicode text, multiple displays, rotation races, accessibility-service
-effects and broad application coverage still need design and verification. Scope
-review should decide the public hierarchy and single-action interfaces before
-those capabilities are integrated.
+The runner's accessibility connection flags are consistent across its modern
+and classic APIs. Long operations run outside broadcast delivery; immediate
+acknowledgement plus status/cancel/release requests keep cancellation reachable.
+Input dispatch is not atomic with UI observation, and inaccessible/custom-drawn
+content is not recovered. Other API levels, secondary displays, other Android
+users and native macOS/Windows hosts remain unverified.

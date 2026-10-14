@@ -45,6 +45,14 @@ await withCommands(async (run) => {
     join(classes, "com/rea/ui/probe/Main.class"),
   ]);
   const unsigned = join(root, "unsigned.apk");
+  const resources = join(root, "resources.zip");
+  await run(values.aapt2, [
+    "compile",
+    "--dir",
+    resolve(import.meta.dirname, "fixture/res"),
+    "-o",
+    resources,
+  ]);
   await run(values.aapt2, [
     "link",
     "-I",
@@ -53,6 +61,7 @@ await withCommands(async (run) => {
     resolve(import.meta.dirname, "fixture/AndroidManifest.xml"),
     "-o",
     unsigned,
+    resources,
   ]);
   await run("zip", ["-q", unsigned, "classes.dex"], { cwd: dex });
   const aligned = join(root, "aligned.apk");

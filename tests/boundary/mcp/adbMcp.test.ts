@@ -196,7 +196,7 @@ const results: Readonly<Record<string, unknown>> = {
     serial: "emulator-5554",
     focused_window: "Window{abcdef u0 com.example.app/Main}",
     focused_app: null,
-    observed_lines: ["mCurrentFocus=Window{abcdef u0 com.example.app/Main}"],
+    observed_lines: ["Window{abcdef u0 com.example.app/Main}"],
   },
   read_adb_setting: {
     client: clientIdentity,
@@ -233,7 +233,8 @@ const results: Readonly<Record<string, unknown>> = {
     apk_path: "/tmp/app.apk",
     bytes: 2048,
     sha256: "a".repeat(64),
-    replaced: false,
+    replace_requested: false,
+    replaced: null,
   },
   uninstall_adb_package: {
     client: clientIdentity,

@@ -7,7 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { withCommands } from "../command-scope.mjs";
 import { projectDump, uniqueControl, actionPoints } from "./hierarchy.mjs";
-import { withFixture } from "./fixture.mjs";
+import { REA_CLI_PATH, withFixture } from "./fixture.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -28,7 +28,7 @@ const env = Object.fromEntries(
 const client = new Client({ name: "adb-ui-scope-probe", version: "1" });
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [resolve("scripts/rea.mjs"), "mcp"],
+  args: [REA_CLI_PATH, "mcp"],
   env,
   stderr: "pipe",
 });
@@ -58,7 +58,7 @@ const receipt = await withCommands((run, signal, settleCommands) =>
         });
       await call("start_adb_app", { serial, package: packageName });
       const cliFocus = await run(process.execPath, [
-        resolve("scripts/rea.mjs"),
+        REA_CLI_PATH,
         "inspect-adb-window",
         serial,
         "--json",

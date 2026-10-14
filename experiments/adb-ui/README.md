@@ -47,6 +47,9 @@ node experiments/adb-ui/verify.mjs --aapt2 /tools/aapt2 --serial emulator-5554 \
 The verifier requires an emulator and refuses an already-installed
 `com.rea.ui.probe` package. The selected adb server follows the caller's normal
 ADB environment and canonical REA binary selection, including blank settings.
+CLI and MCP launches use this checkout's module-relative entrypoint, even when
+the verifier is launched from another directory. Caller-supplied relative APK
+and output paths remain relative to the launch directory.
 Workflow MCP calls share the command cancellation signal; cleanup uses a fresh
 120-second deadline. Primary, uninstall and close errors are aggregated, with
 unresolved owners retained. `fixture-cleanup.json` records the admitted identity

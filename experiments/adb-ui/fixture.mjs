@@ -9,7 +9,10 @@ import { XML_BYTES } from "./hierarchy.mjs";
 import { acquireFixtureLease } from "./lease.mjs";
 
 export const FIXTURE_PACKAGE = "com.rea.ui.probe";
-const CLI = resolve(import.meta.dirname, "../../scripts/rea.mjs");
+export const REA_CLI_PATH = resolve(
+  import.meta.dirname,
+  "../../scripts/rea.mjs",
+);
 const REQUEST_MS = 120_000;
 
 /** Own the admitted APK, installation attempt and MCP session through cleanup. */
@@ -149,7 +152,7 @@ export async function withFixture(
     owner = candidate;
     const cli = await run(
       process.execPath,
-      [CLI, "install-adb-package", serial, snapshot, "--json"],
+      [REA_CLI_PATH, "install-adb-package", serial, snapshot, "--json"],
       { timeoutMs: REQUEST_MS, environment },
     );
     const installation = toolContract("install_adb_package").outputSchema.parse(

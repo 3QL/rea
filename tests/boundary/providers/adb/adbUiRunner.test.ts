@@ -1,7 +1,12 @@
 import { chmod, readFile, writeFile, rename } from "node:fs/promises";
 import { expect, onTestFinished, test } from "vitest";
 import { AdbProvider } from "../../../../src/adb/AdbProvider.js";
-import { parseAdbUiReply } from "../../../../src/adb/AdbUiRunner.js";
+import {
+  AdbUiRunner,
+  parseAdbUiReply,
+} from "../../../../src/adb/AdbUiRunner.js";
+import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
+import { adbUiInputSchemas } from "../../../../src/domain/adb/adbUiAnalysis.js";
 import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDeviceAnalysisService.js";
 import { toolContract } from "../../../../src/contracts/toolContracts.js";
 import {
@@ -88,7 +93,10 @@ const reply = result => console.log('Broadcast completed: result=0, data="REA_UI
 const jobFile = id => path.join(root, 'job-' + id + '.json');
 if (request.operation === 'ping') {
   if(mode.kind === 'unavailable') console.log('Broadcast completed: result=0');
-  else reply(runner);
+  else {
+    reply(runner);
+    if(mode.kind === 'vanish-after-ping') fs.renameSync(__filename,path.join(root,'saved-adb'));
+  }
 } else if (request.operation === 'cancel') {
   if(mode.cancel_offline) { console.error('device offline'); process.exit(1); }
   fs.rmSync(path.join(root, 'active'), {force:true});
@@ -126,13 +134,12 @@ if (request.operation === 'ping') {
 `,
   );
   await chmod(binary, 0o755);
-  const provider = new AdbProvider({
-    environment: {
-      ...process.env,
-      ...workspace.environment,
-      REA_ADB_PATH: binary,
-    },
-  });
+  const environment = {
+    ...process.env,
+    ...workspace.environment,
+    REA_ADB_PATH: binary,
+  };
+  const provider = new AdbProvider({ environment });
   const service = new AdbDeviceAnalysisService(provider);
   onTestFinished(async () => {
     await writeFile(config, "{}");
@@ -141,6 +148,8 @@ if (request.operation === 'ping') {
   });
   return {
     workspace,
+    binary,
+    environment,
     provider,
     service,
     setMode: (next: Record<string, unknown>) =>
@@ -226,6 +235,78 @@ it("cancels only the owned remote request after host command settlement", async 
   ]);
   await expect(readFile(workspace.path("active"))).rejects.toMatchObject({
     code: "ENOENT",
+  });
+});
+
+it("releases a submission cancelled before process creation and admits the next UI call", async () => {
+  const { workspace, binary, environment } = await fixture();
+  const controller = new AbortController();
+  const transport = new AdbUiRunner(environment, async (input) => {
+    const wire = JSON.parse(
+      Buffer.from(input.arguments.at(-1)!, "base64").toString("utf8"),
+    );
+    if (wire.operation === "inspect_adb_ui" && !controller.signal.aborted)
+      controller.abort();
+    return spawnOwnedProviderProcess(input);
+  });
+  onTestFinished(() => transport.close());
+  const request = {
+    operation: "inspect_adb_ui" as const,
+    input: adbUiInputSchemas.inspect_adb_ui.parse(scope),
+  };
+  const client = {
+    binary_path: binary,
+    path_source: "environment" as const,
+    version: "34.0.5-ui-fixture",
+    installed_path: binary,
+  };
+  const provider = {
+    id: "adb",
+    name: "Android Debug Bridge",
+    version: client.version,
+  };
+  const cancelled = await transport.execute(
+    request,
+    binary,
+    client,
+    provider,
+    controller.signal,
+  );
+  if (cancelled.ok)
+    throw new Error("Expected cancellation before process creation");
+  expect(cancelled.error._tag).toBe("AnalysisCancelledError");
+  expect(cancelled.error.cleanupIncomplete).toBe(false);
+  expect(transport.pendingResources).toEqual([]);
+  expect(
+    (await readFile(workspace.path("calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).operation),
+  ).toEqual(["ping"]);
+  const next = await transport.execute(request, binary, client, provider);
+  if (!next.ok) throw next.error;
+  expect(next.value.result).toMatchObject({ snapshot: { id: snapshotId } });
+});
+
+it("releases a proven spawn refusal and admits a later UI call", async () => {
+  const { workspace, binary, service, setMode } = await fixture({
+    kind: "vanish-after-ping",
+  });
+  const result = await service.execute("inspect_adb_ui", scope);
+  await rename(workspace.path("saved-adb"), binary);
+  await setMode({});
+  if (result.ok) throw new Error("Expected spawn refusal");
+  expect(result.error.cleanupIncomplete).toBe(false);
+  expect(
+    (await readFile(workspace.path("calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).operation),
+  ).toEqual(["ping"]);
+  const next = await service.execute("inspect_adb_ui", scope);
+  if (!next.ok) throw next.error;
+  expect(next.value.normalized_result).toMatchObject({
+    snapshot: { id: snapshotId },
   });
 });
 

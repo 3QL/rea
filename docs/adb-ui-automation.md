@@ -129,6 +129,9 @@ application state is left as-is.
   five-second cleanup budget applies. Completed facts survive acknowledgement
   failures as partial observations. Failed cleanup retains exact request/runner
   identities for later retry; another runner instance cannot prove old cleanup.
+  Pending ownership begins at the process launch attempt. Preparation cancellation
+  or proven process-creation failure leaves no remote request to reconcile, so
+  subsequent UI calls in the same session remain usable.
   A missing request after interrupted submission is unresolved delivery, not
   proof of cancellation; cleanup retains it until delivery can be reconciled.
 

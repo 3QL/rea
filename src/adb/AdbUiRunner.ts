@@ -33,8 +33,10 @@ import {
   OwnedCommandFailure,
   runOwnedCommand,
 } from "../process/OwnedCommand.js";
-import { prepareProcessOwnershipInspection } from "../process/ProcessOwnershipObservation.js";
-import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
+import {
+  spawnOwnedProviderProcess,
+  type ProviderProcessSupervisor,
+} from "../process/ProviderProcess.js";
 import { adbArguments } from "./AdbArguments.js";
 
 const PACKAGE_ENV = "REA_ADB_UI_PACKAGE";
@@ -122,6 +124,8 @@ export class AdbUiRunner {
 
   constructor(
     readonly environment: Readonly<Record<string, string | undefined>>,
+    /** Launch adapters must preserve the launch-state observations owned by this boundary. */
+    private readonly launcher = spawnOwnedProviderProcess,
   ) {}
 
   get pendingResources(): readonly string[] {
@@ -175,6 +179,7 @@ export class AdbUiRunner {
     payload: Readonly<Record<string, unknown>>,
     timeoutMs: number,
     signal?: AbortSignal,
+    submission?: RemoteRequest,
   ): Promise<Reply> {
     const json = JSON.stringify(payload);
     if (Buffer.byteLength(json) > REQUEST_BYTES)
@@ -186,7 +191,6 @@ export class AdbUiRunner {
       );
     const runId = randomUUID();
     try {
-      await prepareProcessOwnershipInspection(signal);
       const result = await runOwnedCommand(
         {
           command: binary,
@@ -208,6 +212,12 @@ export class AdbUiRunner {
           runId,
           expectedCommand: null,
           hostEnvironment: this.environment,
+          onLaunchState: (state) => {
+            if (submission === undefined) return;
+            if (state === "attempting")
+              this.#pending.set(submission.requestId, submission);
+            else this.#pending.delete(submission.requestId);
+          },
         },
         { timeoutMs, diagnosticBytes: CAPTURE_BYTES },
         {
@@ -215,6 +225,7 @@ export class AdbUiRunner {
           retainCleanup: (owner) => {
             this.#commands.set(owner, runId);
           },
+          launcher: this.launcher,
         },
       );
       await this.#settleCommands();
@@ -514,7 +525,6 @@ export class AdbUiRunner {
           "UI request exceeds the 16 KiB protocol budget",
           { max_request_bytes: REQUEST_BYTES },
         );
-      this.#pending.set(owned.requestId, owned);
       let reply = await this.#send(
         binary,
         serial,
@@ -523,6 +533,7 @@ export class AdbUiRunner {
         payload,
         10000,
         signal,
+        owned,
       );
       if (reply.instance_id !== owned.instanceId)
         throw new AnalysisProtocolError(

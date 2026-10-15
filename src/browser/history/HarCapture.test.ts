@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import { historicalHar } from "../../../tests/fixtures/historicalHar.js";
+import { httpToolkitHar } from "../../../tests/fixtures/httpToolkitHar.js";
 import { decodeCaptureText } from "./CaptureJson.js";
 import { decodeHarCapture } from "./HarCapture.js";
 
@@ -549,6 +550,48 @@ it.each([
     ).toThrow("HAR schema validation failed");
   },
 );
+
+it("decodes an HTTP Toolkit export profile with TLS errors and socket extensions as reported evidence", () => {
+  const decoded = decodeHarCapture(JSON.stringify(httpToolkitHar()), []);
+  expect(decoded.total_records).toBe(3);
+  expect(decoded.records.map((record) => record.ordinal)).toEqual([0, 1, 2]);
+  expect(decoded.container.reported).toMatchObject({
+    log: {
+      creator: { name: "HTTP Toolkit" },
+      _tlsErrors: [
+        {
+          hostname: "pinned.example.test",
+          cause: "cert-rejected",
+          clientIPAddress: "192.0.2.10",
+        },
+      ],
+    },
+  });
+  expect(decoded.records[0]?.reported).toMatchObject({
+    request: {
+      postData: {
+        mimeType: "application/x-www-form-urlencoded",
+        params: [
+          { name: "user", value: "ada" },
+          { name: "next", value: "/home" },
+        ],
+        text: "user=ada&next=%2Fhome",
+      },
+    },
+  });
+  expect(decoded.records[1]?.reported).toMatchObject({
+    request: { _requestBodyStatus: "discarded:not-decodable" },
+    response: { status: 0 },
+  });
+  expect(decoded.records[2]?.reported).toMatchObject({
+    _resourceType: "websocket",
+    _webSocketMessages: [
+      { type: "send", opcode: 1, data: "hello" },
+      { type: "receive", opcode: 2, data: "aGk=" },
+    ],
+    _webSocketClose: { code: 1000, reason: "done" },
+  });
+});
 
 it.each([
   "c2VjcmV0",

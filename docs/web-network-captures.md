@@ -167,6 +167,60 @@ filters and clear sessions. The documented MCP session sources do not provide
 a saved-snapshot selector; use the SAZ workflow above for saved files. REA does
 not register or wrap the Fiddler MCP server.
 
+## Reading HTTP Toolkit exports (`.har`)
+
+HTTP Toolkit exports visible or selected exchanges as a HAR 1.2 file (a
+[Pro feature](https://httptoolkit.com/docs/reference/view-page)), including
+captures from its Android interception. Export the exchange or selection, then
+inspect the saved file without contacting the recorded URLs:
+
+```sh
+rea inspect-web-network-capture /absolute/session.har har --json
+```
+
+The export profile decodes through the existing HAR 1.2 support: entries keep
+dual `params`+`text` form bodies, `_trailers`, aborted `status: 0` responses,
+and WebSocket `_webSocketMessages`/`_webSocketClose` as reported evidence.
+Failed TLS connections — for example apps that rejected the proxy CA,
+including certificate-pinned apps — are retained in the container's reported
+`log._tlsErrors` with the producer's `cause` literal (such as
+`cert-rejected`), hostname, and client address. They are connection
+observations, not addressable HTTP records, and the API-surface view does not
+cover them. Producer-declared creator versions and cause literals are not
+authenticated. A live HTTP Toolkit export through REA remains unverified; the
+covered profile is modeled on the exporter's HAR source.
+
+For Android HTTPS, HTTP Toolkit trusts its CA per app (user-installed CA plus
+an app network-security-config opt-in), through an emulator or rooted device
+with ADB-injected system CA certificates, or not at all for pinned apps. That
+interception setup, live capture, and HTTP Toolkit's own MCP server stay
+outside REA: use them separately, then inspect exported HAR files here. REA
+provides no certificate-pinning bypass, CA-injection automation, or traffic
+rewriting; defeating those protections is out of scope.
+
+## Composing Android and Frida observations
+
+TLS errors only show that an app rejected the proxy CA. To attribute them,
+compose REA's existing device and instrumentation lanes with a separate
+HTTP Toolkit capture:
+
+1. Select the device with REA's ADB lane (`list_adb_devices`,
+   `inspect_adb_device`) and acquire the package (`pull_adb_package`) for
+   static analysis (`inspect_android_package`).
+2. Run interception in HTTP Toolkit itself (its VPN app, ADB system-CA
+   injection, or its own Frida integration), or instrument a caller-selected
+   target through REA's Frida lane (`instrument_with_frida`) with a
+   caller-authored script. REA ships no certificate-unpinning scripts.
+3. Export the observed exchanges as HAR from HTTP Toolkit and inspect them
+   here as above.
+
+Each step keeps its own authority and Evidence: ADB acquisition, Frida
+session messages with the script digest, and the offline HAR inspection.
+Static package facts, live session messages, and recorded TLS failures are
+separate observations; a rejected handshake does not identify which
+protection the app applied. Live Android, Frida-server, and HTTP Toolkit
+export verification remain unavailable in this checkout.
+
 ## Reading the evidence
 
 - `artifact` identifies the caller-selected file and stable snapshot digest.

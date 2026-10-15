@@ -86,7 +86,10 @@ Replace the example IDs with the actual discovery result. The primitives are:
 
 Directions are `up`, `down`, `left` or `right`; percent is greater than zero and
 at most one. Refresh checks reject changed element facts, disabled/invisible
-targets and inactive windows. No first matching element is silently chosen.
+targets and inactive windows, including a control's changed password state.
+UI Automator 2.4.0 refreshes retained nodes through `getAccessibilityNodeInfo()`;
+text entry consumes that validated node so its password classification matches
+the selection used to redact Evidence parameters. No first matching element is silently chosen.
 Snapshots and input dispatch are sequential, so UI changes between observations
 remain possible.
 

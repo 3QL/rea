@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createHash } from "node:crypto";
 import { withCommands } from "../command-scope.mjs";
@@ -42,7 +42,10 @@ await withCommands(async (run) => {
     resolve(values.framework),
     "--output",
     dex,
-    join(classes, "com/rea/ui/probe/Main.class"),
+    ...(await readdir(classes, { recursive: true }))
+      .filter((path) => path.endsWith(".class"))
+      .sort()
+      .map((path) => join(classes, path)),
   ]);
   const unsigned = join(root, "unsigned.apk");
   const resources = join(root, "resources.zip");

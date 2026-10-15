@@ -1,10 +1,19 @@
 package com.rea.ui.probe;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.Bundle;
+import android.text.InputType;
+import android.text.method.PasswordTransformationMethod;
 import android.view.DragEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -14,6 +23,7 @@ import android.widget.TextView;
 /** Self-owned UI oracle; it requests no permissions and performs no network I/O. */
 public final class Main extends Activity {
   private int taps = 0;
+  private BroadcastReceiver mutations;
 
   @Override
   public void onCreate(Bundle state) {
@@ -24,6 +34,16 @@ public final class Main extends Activity {
     input.setId(id("entry"));
     input.setSingleLine(true);
     input.setContentDescription("rea-input");
+    input.setAccessibilityDelegate(
+        new View.AccessibilityDelegate() {
+          @Override
+          public void onInitializeAccessibilityNodeInfo(View view, AccessibilityNodeInfo info) {
+            super.onInitializeAccessibilityNodeInfo(view, info);
+            // Some controls expose empty text as null. Keep that case stable when
+            // testing a password transition whose only distinguishing fact is its flag.
+            if (input.length() == 0) info.setText(null);
+          }
+        });
     layout.addView(input);
     Button button = new Button(this);
     button.setId(id("sign_in"));
@@ -110,6 +130,68 @@ public final class Main extends Activity {
     scroll.addView(rows);
     layout.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
     setContentView(layout);
+    mutations =
+        new BroadcastReceiver() {
+          @Override
+          public void onReceive(Context context, Intent intent) {
+            String mutation = intent.getStringExtra("mutation");
+            if (mutation == null) {
+              setResultCode(1);
+              return;
+            }
+            switch (mutation) {
+              case "disable":
+                button.setEnabled(false);
+                break;
+              case "move":
+                button.setTranslationX(60);
+                break;
+              case "detach":
+                layout.removeView(button);
+                break;
+              case "password":
+                input.setRawInputType(
+                    InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                input.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                break;
+              case "reset":
+                if (button.getParent() == null) layout.addView(button, 1);
+                button.setEnabled(true);
+                button.setTranslationX(0);
+                input.setRawInputType(InputType.TYPE_CLASS_TEXT);
+                input.setTransformationMethod(null);
+                input.setText("");
+                break;
+              default:
+                setResultCode(1);
+                return;
+            }
+            // Read back actual View state before acknowledging this deterministic,
+            // fixture-only mutation. No new runner capture retires the old snapshot.
+            setResultData(
+                mutation
+                    + ":"
+                    + button.isEnabled()
+                    + ":"
+                    + button.getTranslationX()
+                    + ":"
+                    + (button.getParent() != null)
+                    + ":"
+                    + (input.getTransformationMethod() instanceof PasswordTransformationMethod));
+            setResultCode(0);
+          }
+        };
+    IntentFilter filter = new IntentFilter(getPackageName() + ".MUTATE");
+    if (Build.VERSION.SDK_INT >= 33)
+      registerReceiver(
+          mutations, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
+    else registerReceiver(mutations, filter, Manifest.permission.DUMP, null);
+  }
+
+  @Override
+  public void onDestroy() {
+    if (mutations != null) unregisterReceiver(mutations);
+    super.onDestroy();
   }
 
   private int id(String name) {

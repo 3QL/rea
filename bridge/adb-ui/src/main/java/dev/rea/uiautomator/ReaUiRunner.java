@@ -476,7 +476,7 @@ public final class ReaUiRunner extends Instrumentation {
       throw new Refusal("stale_element", "Element does not belong to the selected snapshot");
     if (!snapshot.packageName.equals(device.getCurrentPackageName()))
       throw new Refusal("focus_changed", "Expected package is not in the active window");
-    if (selected != null) refreshNode(selected);
+    AccessibilityNodeInfo selectedNode = selected == null ? null : refreshNode(selected);
     call.check();
     JSONObject before = snapshot.json(false);
     JSONObject selectedFacts = selected == null ? null : selected.facts;
@@ -505,7 +505,10 @@ public final class ReaUiRunner extends Instrumentation {
           break;
         case "set_text":
           {
-            AccessibilityNodeInfo node = selected.object.getAccessibilityNodeInfo();
+            // Consume the node validated at the action boundary. A second,
+            // unvalidated refresh could change its password classification
+            // while selected_element still describes the admitted selection.
+            AccessibilityNodeInfo node = selectedNode;
             if (!node.isEditable())
               throw new Refusal("unusable_element", "Selected element is not editable");
             Bundle value = new Bundle();
@@ -633,7 +636,9 @@ public final class ReaUiRunner extends Instrumentation {
     }
   }
 
-  private static void refreshNode(Node selected) throws Exception {
+  private static AccessibilityNodeInfo refreshNode(Node selected) throws Exception {
+    // UI Automator 2.4.0 refreshes here and throws StaleObjectException if the
+    // retained node cannot be refreshed. Keep freshness owned by that API.
     AccessibilityNodeInfo current = selected.object.getAccessibilityNodeInfo();
     JSONObject fresh =
         facts(
@@ -655,7 +660,10 @@ public final class ReaUiRunner extends Instrumentation {
           "enabled",
           "visible",
           "clickable",
-          "editable"
+          "long_clickable",
+          "scrollable",
+          "editable",
+          "password"
         })
       if (!String.valueOf(fresh.get(key)).equals(String.valueOf(selected.facts.get(key))))
         throw new Refusal("stale_element", "Selected element changed: " + key);
@@ -666,10 +674,15 @@ public final class ReaUiRunner extends Instrumentation {
     } finally {
       if (window != null) window.recycle();
     }
-    if (!current.isEnabled()
-        || !current.isVisibleToUser()
-        || selected.object.getVisibleBounds().isEmpty())
+    // Use the facts just validated; getVisibleBounds() would implicitly refresh
+    // again after comparison, creating another unvalidated state transition.
+    JSONObject visible = fresh.getJSONObject("visible_bounds");
+    if (!fresh.getBoolean("enabled")
+        || !fresh.getBoolean("visible")
+        || visible.getInt("right") <= visible.getInt("left")
+        || visible.getInt("bottom") <= visible.getInt("top"))
       throw new Refusal("unusable_element", "Selected element is disabled or not visible");
+    return current;
   }
 
   private Snapshot selectedSnapshot(JSONObject input) throws Exception {
@@ -727,9 +740,9 @@ public final class ReaUiRunner extends Instrumentation {
   private static JSONObject facts(
       UiObject2 object, AccessibilityNodeInfo node, String id, String parent, int window)
       throws Exception {
+    Rect visibleBounds = object.getVisibleBounds();
     if (node.getWindowId() != window)
       throw new Refusal("stale_element", "Window changed during observation");
-    Rect visibleBounds = object.getVisibleBounds();
     Rect declaredBounds = new Rect();
     node.getBoundsInScreen(declaredBounds);
     return object(

@@ -7,7 +7,7 @@ CLI/MCP discovery and input, using isolated emulator applications.
 
 ## Native Android Views
 
-With compatible caller-supplied Android tools and an already-running runner:
+With JDK 17, compatible caller-supplied Android tools and an already-running runner:
 
 ```sh
 npm run build:cached
@@ -24,6 +24,13 @@ explicit selection, tap/double-tap/long-press, Unicode replacement and clearing,
 sensitive-text handling, scroll/swipe/drag/key primitives, stale/disabled refusals,
 wait outcomes, cancellation, screenshots and CLI/MCP snapshot parity. A completed
 provider call and an observed application outcome are asserted separately.
+
+`verify-node-validation.mjs` takes the same arguments and uses the native fixture's
+shell-permission-protected mutation receiver to change existing Views without
+retiring the runner snapshot. It verifies stale disabled/moved/detached/password
+targets are refused, freshly selected password text is redacted, ordinary text
+is preserved and the fixture is removed. The builder dexes the complete compiled
+class inventory, including the fixture's accessibility delegate and receiver.
 
 ## Compose
 
@@ -86,6 +93,14 @@ cover different work and are not comparative performance baselines.
 The runner's accessibility connection flags are consistent across its modern
 and classic APIs. Long operations run outside broadcast delivery; immediate
 acknowledgement plus status/cancel/release requests keep cancellation reachable.
+The node-transition verifier reproduced the password-state omission on API 36
+before the fix, while disabled/moved/detached nodes were already refused by the
+pinned UI Automator getter's refresh behavior (also checked in its AAR bytecode).
+After the fix, all transitions and both password/plain-text Evidence checks pass.
+That targeted task took 28.51 s elapsed and 17.73 s host CPU, with 884,248,576 bytes
+peak host cgroup memory including the observer. The emulator was already booted;
+focused host tests ran concurrently. Cold and external-device costs and agent
+tokens remain unmeasured; this is not a comparison with the larger workflow above.
 Input dispatch is not atomic with UI observation, and inaccessible/custom-drawn
 content is not recovered. Other API levels, secondary displays, other Android
 users and native macOS/Windows hosts remain unverified.

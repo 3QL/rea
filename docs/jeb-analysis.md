@@ -83,4 +83,4 @@ Use a package version that actually includes this adapter; repository main can b
 {"name":"decompile_jeb_item","arguments":{"item_address":"0x1000","item_kind":"method"}}
 ```
 
-For guided registration, set `REA_JEB_MCP_URL` before `rea setup --client <client>`. Setup includes that endpoint reference in its reviewed plan and preserves it after approval. `rea doctor --provider jeb --json` validates the endpoint without starting JEB and explicitly leaves engine availability and project binding for analysis.
+For guided registration, set `REA_JEB_MCP_URL` before `rea setup --client <client>`. Setup includes that endpoint reference in its reviewed plan and preserves it after approval. `rea doctor --provider jeb --json` validates the endpoint and any selected `REA_JEB_MCP_TIMEOUT_MS` without starting JEB and explicitly leaves engine availability and project binding for analysis.

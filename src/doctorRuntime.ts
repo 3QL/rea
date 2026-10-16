@@ -17,7 +17,7 @@ import { ok } from "./domain/result.js";
 export const createSystemDoctorHost = (
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
 ): DoctorHost => {
-  const jebRegistration = inspectJebRegistration(environment.REA_JEB_MCP_URL);
+  const jebRegistration = inspectJebRegistration(environment);
   return systemDoctorHost({
     environment,
     providerRegistrationEnvironment: () =>

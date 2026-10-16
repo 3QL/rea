@@ -4,7 +4,9 @@ import { providerRegistrationEnvironment } from "../application/SetupRegistratio
 import { DEFAULT_JEB_MCP_ENDPOINT } from "./JebMcpEndpoint.js";
 
 it("keeps the JEB endpoint for setup without launching the engine", () => {
-  const inspection = inspectJebRegistration(DEFAULT_JEB_MCP_ENDPOINT);
+  const inspection = inspectJebRegistration({
+    REA_JEB_MCP_URL: DEFAULT_JEB_MCP_ENDPOINT,
+  });
   expect(inspection).toMatchObject({
     id: "jeb",
     configured: true,
@@ -15,24 +17,32 @@ it("keeps the JEB endpoint for setup without launching the engine", () => {
   expect(providerRegistrationEnvironment([inspection])).toEqual({
     REA_JEB_MCP_URL: DEFAULT_JEB_MCP_ENDPOINT,
   });
-  expect(inspectJebRegistration("http://127.0.0.1:9999/mcp")).toMatchObject({
+  expect(
+    inspectJebRegistration({
+      REA_JEB_MCP_URL: "http://127.0.0.1:9999/mcp",
+    }),
+  ).toMatchObject({
     configured: true,
     available: true,
     registrationEnvironment: {
       REA_JEB_MCP_URL: "http://127.0.0.1:9999/mcp",
     },
   });
-  expect(inspectJebRegistration("https://example.com/mcp")).toMatchObject({
+  expect(
+    inspectJebRegistration({
+      REA_JEB_MCP_URL: "https://example.com/mcp",
+    }),
+  ).toMatchObject({
     configured: true,
     available: false,
     registrationEnvironment: {},
   });
-  expect(inspectJebRegistration(undefined)).toMatchObject({
+  expect(inspectJebRegistration({})).toMatchObject({
     configured: false,
     available: false,
     registrationEnvironment: {},
   });
-  expect(inspectJebRegistration("")).toMatchObject({
+  expect(inspectJebRegistration({ REA_JEB_MCP_URL: "" })).toMatchObject({
     configured: false,
     available: false,
   });

@@ -110,8 +110,10 @@ it("writes a configured JEB endpoint from the reviewed plan into the client regi
     USERPROFILE: join(root, "home"),
     CODEX_HOME: join(root, "codex"),
     REA_JEB_MCP_URL: endpoint,
+    REA_JEB_MCP_TIMEOUT_MS: "900000",
   };
   vi.stubEnv("REA_JEB_MCP_URL", "http://127.0.0.1:8888/mcp");
+  vi.stubEnv("REA_JEB_MCP_TIMEOUT_MS", "1.5");
   try {
     const host = systemSetupHost(
       createSystemDoctorHost(environment),
@@ -132,6 +134,8 @@ it("writes a configured JEB endpoint from the reviewed plan into the client regi
     );
     expect(saved).toContain("REA_JEB_MCP_URL");
     expect(saved).toContain(endpoint);
+    expect(saved).toContain("REA_JEB_MCP_TIMEOUT_MS");
+    expect(saved).toContain("900000");
     expect(saved).not.toContain("8888");
   } finally {
     await rm(root, { recursive: true, force: true });

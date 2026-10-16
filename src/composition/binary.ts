@@ -5,6 +5,7 @@ import { assertBinaryLaneProviderIds } from "../application/binary/BinaryProvide
 import { HopperProvider } from "../hopper/HopperProvider.js";
 import { GhidraProvider } from "../ghidra/GhidraProvider.js";
 import { IdaProvider } from "../ida/IdaProvider.js";
+import { KunaProvider } from "../kuna/KunaProvider.js";
 import type { Logger } from "pino";
 import { auxiliaryAnalysisProviderDeclarations } from "./auxiliaryAnalysisProviders.js";
 import { AnalysisProviderRegistry } from "../application/binary/AnalysisProviderRegistry.js";
@@ -17,7 +18,7 @@ import { ManagedStaticProvider } from "../dotnet/ManagedStaticProvider.js";
  * This is the sole production wiring point, so both adapters share identical
  * provider selection, profile, lifecycle, and Evidence semantics.
  *
- * The binary lane membership (`hopper`, `ghidra`, `ida`) is published for
+ * The binary lane membership is published for
  * startup-safe consumers as `BINARY_ANALYSIS_PROVIDER_IDS` in
  * `application/binary/BinaryProviderIds.ts`, and the wiring below is
  * validated against it so the two cannot drift silently.
@@ -31,7 +32,8 @@ export const createBinarySession = (
   const hopper = new HopperProvider(config, logger, environment);
   const ghidra = new GhidraProvider(config, logger, environment);
   const ida = new IdaProvider(config, environment);
-  const laneProviders = [hopper, ghidra, ida];
+  const kuna = new KunaProvider(environment);
+  const laneProviders = [hopper, ghidra, ida, kuna];
   assertBinaryLaneProviderIds(
     laneProviders.map((provider) => provider.identity().id),
   );

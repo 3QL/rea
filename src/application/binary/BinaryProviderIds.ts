@@ -13,6 +13,7 @@ export const BINARY_ANALYSIS_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "hopper",
   "ghidra",
   "ida",
+  "kuna",
 ]);
 
 /**

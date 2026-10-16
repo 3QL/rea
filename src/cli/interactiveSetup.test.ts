@@ -38,15 +38,18 @@ it("sends JEB-only setups to the dedicated JEB lane instead of analyze", () => {
   );
 });
 
-it("keeps analyze guidance when a binary provider is ready alongside JEB", () => {
-  const lines = describeReadyCapabilities(
-    resultWithProviders(["hopper", "jeb"]),
-    [],
-    "rea",
-  );
-  expect(lines).toContain("│  CLI: rea analyze /path/to/app");
-  expect(lines).toContain("│  JEB: rea inspect-jeb-client");
-});
+it.each(["hopper", "kuna"])(
+  "keeps analyze guidance when %s is ready alongside JEB",
+  (provider) => {
+    const lines = describeReadyCapabilities(
+      resultWithProviders([provider, "jeb"]),
+      [],
+      "rea",
+    );
+    expect(lines).toContain("│  CLI: rea analyze /path/to/app");
+    expect(lines).toContain("│  JEB: rea inspect-jeb-client");
+  },
+);
 
 it("suggests capabilities when no provider is ready", () => {
   const lines = describeReadyCapabilities(resultWithProviders([]), [], "rea");

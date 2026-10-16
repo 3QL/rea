@@ -60,6 +60,7 @@ public final class ReaUiRunner extends Instrumentation {
   private Snapshot latest;
   private final Map<String, Set<String>> sensitiveText = new LinkedHashMap<>();
   private int sensitiveCodeUnits;
+  private ReaUiSocket socket;
 
   @Override
   public void onCreate(Bundle arguments) {
@@ -84,112 +85,35 @@ public final class ReaUiRunner extends Instrumentation {
         .setUiAutomationFlags(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
     device = UiDevice.getInstance(this);
     Context context = getTargetContext();
+    socket =
+        new ReaUiSocket(
+            context.getFilesDir(),
+            instance,
+            ((REQUEST_BYTES + 2) / 3) * 4,
+            encoded -> exchange(encoded, true));
+    try {
+      if ((context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)
+          == 0)
+        throw new java.io.IOException(
+            "The private UI transport requires the operator-built debug runner");
+      socket.start();
+    } catch (Exception cause) {
+      try {
+        socket.close();
+      } catch (Exception cleanup) {
+        cause.addSuppressed(cleanup);
+      }
+      Bundle failure = new Bundle();
+      failure.putString("stream", "REA_UI_SETUP_FAILED " + reason(cause) + "\n");
+      finish(-1, failure);
+      return;
+    }
     BroadcastReceiver receiver =
         new BroadcastReceiver() {
           @Override
           public void onReceive(Context ignored, Intent intent) {
-            final PendingResult pending = goAsync();
-            JSONObject request = null;
-            try {
-              String encoded = intent.getStringExtra("request");
-              if (encoded == null || encoded.length() > ((REQUEST_BYTES + 2) / 3) * 4)
-                throw new Refusal("invalid_request", "Request exceeds the protocol budget");
-              byte[] bytes = Base64.decode(encoded, Base64.NO_WRAP);
-              if (bytes.length > REQUEST_BYTES)
-                throw new Refusal("invalid_request", "Request exceeds the protocol budget");
-              request = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
-              UUID.fromString(request.getString("request_id"));
-              if (request.getInt("protocol") != 1)
-                throw new Refusal("invalid_request", "Unsupported protocol");
-              String operation = request.getString("operation");
-              if (operation.equals("ping")) {
-                reply(pending, request, runner(), null);
-                return;
-              }
-              if (!instance.equals(request.getString("instance_id")))
-                throw new Refusal("runner_changed", "The selected runner instance changed");
-              if (operation.equals("cancel")) {
-                Call call = calls.get(request.getString("cancel_request_id"));
-                boolean running = call != null && !call.done;
-                if (running) call.cancelled = true;
-                reply(
-                    pending,
-                    request,
-                    object(
-                        "state",
-                        call == null ? "missing" : running ? "cancelling" : "settled",
-                        "response",
-                        call == null || !call.done ? null : call.response),
-                    null);
-                return;
-              }
-              if (operation.equals("status")) {
-                Call call = calls.get(request.getString("target_request_id"));
-                reply(
-                    pending,
-                    request,
-                    object(
-                        "state",
-                        call == null ? "missing" : call.done ? "settled" : "running",
-                        "response",
-                        call == null || !call.done ? null : call.response),
-                    null);
-                return;
-              }
-              if (operation.equals("forget")) {
-                String id = request.getString("target_request_id");
-                Call call = calls.get(id);
-                if (call != null && !call.done)
-                  throw new Refusal("busy", "Cannot release an active request");
-                if (call != null) calls.remove(id, call);
-                reply(pending, request, object("state", "forgotten"), null);
-                return;
-              }
-              JSONObject input = request.getJSONObject("input");
-              int timeout = input.optInt("timeout_ms", 10000);
-              if (timeout < 1 || timeout > 30000)
-                throw new Refusal(
-                    "invalid_request", "Timeout exceeds the 30-second operation budget");
-              String requestId = request.getString("request_id");
-              Call previous = calls.get(requestId);
-              if (previous != null) {
-                if (!previous.request.equals(request.toString()))
-                  throw new Refusal(
-                      "invalid_request", "Request ID already belongs to different input");
-                reply(pending, request, object("state", "accepted"), null);
-                return;
-              }
-              if (calls.size() >= 16)
-                throw new Refusal("capacity", "Unacknowledged UI request capacity exhausted");
-              Call call = new Call(requestId, timeout, request.toString());
-              if (!active.compareAndSet(null, call))
-                throw new Refusal("busy", "Another UI request is active");
-              calls.put(requestId, call);
-              final JSONObject selected = request;
-              worker.execute(
-                  () -> {
-                    JSONObject result = null;
-                    Throwable failure = null;
-                    try {
-                      result = execute(operation, input, call);
-                    } catch (Throwable cause) {
-                      failure = cause;
-                    } finally {
-                      try {
-                        call.response = response(selected, result, failure);
-                      } catch (JSONException malformed) {
-                        call.response = null;
-                      }
-                      call.done = true;
-                      active.compareAndSet(call, null);
-                    }
-                  });
-              // An ordered broadcast must finish promptly. Keeping it open
-              // would queue cancellation behind the work being cancelled.
-              reply(pending, request, object("state", "accepted"), null);
-            } catch (Throwable cause) {
-              reply(pending, request, null, cause);
-            }
+            setResultData(exchange(intent.getStringExtra("request"), false));
+            setResultCode(0);
           }
         };
     IntentFilter filter = new IntentFilter(context.getPackageName() + ".REQUEST");
@@ -206,10 +130,147 @@ public final class ReaUiRunner extends Instrumentation {
       Thread.currentThread().interrupt();
     } finally {
       context.unregisterReceiver(receiver);
+      try {
+        socket.close();
+      } catch (java.io.IOException cleanup) {
+        Bundle retained = new Bundle();
+        retained.putString("stream", "REA_UI_CLEANUP_INCOMPLETE " + reason(cleanup) + "\n");
+        sendStatus(-1, retained);
+      }
       worker.shutdownNow();
       if (latest != null) latest.recycle();
       finish(0, new Bundle());
     }
+  }
+
+  private String exchange(String encoded, boolean privateStream) {
+    JSONObject request = null;
+    try {
+      if (encoded == null || encoded.length() > ((REQUEST_BYTES + 2) / 3) * 4)
+        throw new Refusal("invalid_request", "Request exceeds the protocol budget");
+      byte[] bytes = Base64.decode(encoded, Base64.NO_WRAP);
+      if (bytes.length > REQUEST_BYTES)
+        throw new Refusal("invalid_request", "Request exceeds the protocol budget");
+      request =
+          new JSONObject(
+              StandardCharsets.UTF_8
+                  .newDecoder()
+                  .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                  .decode(java.nio.ByteBuffer.wrap(bytes))
+                  .toString());
+      UUID.fromString(request.getString("request_id"));
+      if (request.getInt("protocol") != 2)
+        throw new Refusal("invalid_request", "Unsupported protocol; rebuild the matching runner");
+      return encodeResponse(response(request, dispatch(request, privateStream), null));
+    } catch (Throwable cause) {
+      try {
+        return encodeResponse(response(request, null, cause));
+      } catch (JSONException malformed) {
+        return "REA_UI_V2:invalid-response";
+      }
+    }
+  }
+
+  /** Both channels share admission, cancellation and retained-result ownership. */
+  private synchronized JSONObject dispatch(JSONObject request, boolean privateStream)
+      throws Exception {
+    String operation = request.getString("operation");
+    if (operation.equals("ping"))
+      return object("runner", runner(), "socket_path", socket.relativePath());
+    if (!instance.equals(request.getString("instance_id")))
+      throw new Refusal("runner_changed", "The selected runner instance changed");
+    if (operation.equals("prepare")) {
+      if (privateStream)
+        throw new Refusal("invalid_request", "Preparation uses the control channel");
+      String target = request.getString("target_operation");
+      if (!target.equals("inspect_adb_ui")
+          && !target.equals("find_adb_ui_elements")
+          && !target.equals("wait_for_adb_ui")
+          && !target.equals("perform_adb_ui_action"))
+        throw new Refusal("invalid_request", "Unknown UI operation");
+      String id = request.getString("request_id");
+      Call existing = calls.get(id);
+      if (existing != null && !existing.operation.equals(target))
+        throw new Refusal("invalid_request", "Request ID already belongs to a different operation");
+      if (existing == null) {
+        if (calls.size() >= 16)
+          throw new Refusal("capacity", "Unacknowledged UI request capacity exhausted");
+        calls.put(id, new Call(id, target));
+      }
+      return object("state", "prepared");
+    }
+    if (operation.equals("cancel")) {
+      Call call = calls.get(request.getString("cancel_request_id"));
+      if (call != null && !call.done) {
+        call.cancelled = true;
+        if (call.request == null) {
+          call.response =
+              response(
+                  object("request_id", call.id),
+                  null,
+                  new Refusal("cancelled", "Request cancelled before input submission"));
+          call.done = true;
+        }
+      }
+      return object(
+          "state",
+          call == null ? "missing" : call.done ? "settled" : "cancelling",
+          "response",
+          call == null || !call.done ? null : call.response);
+    }
+    if (operation.equals("status")) {
+      Call call = calls.get(request.getString("target_request_id"));
+      return object(
+          "state",
+          call == null ? "missing" : call.done ? "settled" : "running",
+          "response",
+          call == null || !call.done ? null : call.response);
+    }
+    if (operation.equals("forget")) {
+      String id = request.getString("target_request_id");
+      Call call = calls.get(id);
+      if (call != null && !call.done) throw new Refusal("busy", "Cannot release an active request");
+      if (call != null) calls.remove(id, call);
+      return object("state", "forgotten");
+    }
+    if (!privateStream)
+      throw new Refusal("invalid_request", "UI input must use the private stdin transport");
+    Call call = calls.get(request.getString("request_id"));
+    if (call == null || !call.operation.equals(operation))
+      throw new Refusal("invalid_request", "UI request has no matching preparation");
+    if (call.done || call.cancelled) throw new Refusal("cancelled", "UI request already settled");
+    if (call.request != null) {
+      if (!call.request.equals(request.toString()))
+        throw new Refusal("invalid_request", "Request ID already belongs to different input");
+      return object("state", "accepted");
+    }
+    JSONObject input = request.getJSONObject("input");
+    int timeout = input.getInt("timeout_ms");
+    if (timeout < 1 || timeout > 30000)
+      throw new Refusal("invalid_request", "Invalid operation deadline");
+    if (!active.compareAndSet(null, call))
+      throw new Refusal("busy", "Another UI request is active");
+    call.request = request.toString();
+    call.deadline = SystemClock.uptimeMillis() + timeout;
+    worker.execute(
+        () -> {
+          JSONObject result = null;
+          Throwable failure = null;
+          try {
+            result = execute(operation, input, call);
+          } catch (Throwable cause) {
+            failure = cause;
+          } finally {
+            try {
+              call.response = response(request, result, failure);
+            } catch (JSONException malformed) {
+              call.response = null;
+            }
+            call.done = true;
+            active.compareAndSet(call, null);
+          }
+        });
+    return object("state", "accepted");
   }
 
   private JSONObject execute(String operation, JSONObject input, Call call) throws Exception {
@@ -900,46 +961,34 @@ public final class ReaUiRunner extends Instrumentation {
     return object;
   }
 
-  private void reply(
-      BroadcastReceiver.PendingResult pending,
-      JSONObject request,
-      JSONObject result,
-      Throwable failure) {
-    try {
-      JSONObject response = (JSONObject) maskResult(response(request, result, failure));
-      byte[] bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
-      if (bytes.length > RESPONSE_BYTES) {
-        response =
-            object(
-                "protocol",
-                1,
-                "request_id",
-                request == null ? null : request.optString("request_id", null),
-                "instance_id",
-                instance,
-                "ok",
-                false,
-                "result",
-                null,
-                "error",
-                object(
-                    "kind", "capacity", "reason", "Response exceeds the Binder transport budget"));
-        bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
-      }
-      pending.setResultData("REA_UI_V1:" + Base64.encodeToString(bytes, Base64.NO_WRAP));
-      pending.setResultCode(failure == null ? 0 : 1);
-    } catch (Throwable ignored) {
-      pending.setResultCode(2);
-    } finally {
-      pending.finish();
+  private String encodeResponse(JSONObject message) throws JSONException {
+    JSONObject response = (JSONObject) maskResult(message);
+    byte[] bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
+    if (bytes.length > RESPONSE_BYTES) {
+      response =
+          object(
+              "protocol",
+              2,
+              "request_id",
+              message.optString("request_id", null),
+              "instance_id",
+              instance,
+              "ok",
+              false,
+              "result",
+              null,
+              "error",
+              object("kind", "capacity", "reason", "Response exceeds the Binder transport budget"));
+      bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
     }
+    return "REA_UI_V2:" + Base64.encodeToString(bytes, Base64.NO_WRAP);
   }
 
   private JSONObject response(JSONObject request, JSONObject result, Throwable failure)
       throws JSONException {
     return object(
         "protocol",
-        1,
+        2,
         "request_id",
         request == null ? null : request.optString("request_id", null),
         "instance_id",
@@ -986,16 +1035,16 @@ public final class ReaUiRunner extends Instrumentation {
 
   private static final class Call {
     final String id;
-    final long deadline;
-    final String request;
+    volatile long deadline = Long.MAX_VALUE;
+    final String operation;
+    String request;
     volatile boolean cancelled;
     volatile boolean done;
     volatile JSONObject response;
 
-    Call(String id, int timeout, String request) {
+    Call(String id, String operation) {
       this.id = id;
-      this.request = request;
-      deadline = SystemClock.uptimeMillis() + Math.max(timeout, 1);
+      this.operation = operation;
     }
 
     boolean expired() {

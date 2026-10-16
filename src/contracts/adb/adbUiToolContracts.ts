@@ -68,7 +68,7 @@ export const ADB_UI_TOOL_CONTRACTS = [
     ...toolContractMetadata("perform_adb_ui_action"),
     kind: "adb-provider",
     description:
-      "Perform one explicit Android UI primitive: tap, double tap, long press, set/clear text, scroll, swipe, drag or key event. Select an element from the retained snapshot; key events select its foreground package. Refresh and validate element facts before dispatch, rejecting stale or disabled targets. Reports dispatch acknowledgement separately from observed after-state. Actions can change app data and network state. Caller-marked sensitive text and password-control text are excluded from recorded parameters.",
+      "Perform one explicit Android UI primitive: tap, double tap, long press, set/clear text, scroll, swipe, drag or key event. Select an element from the retained snapshot; key events select its foreground package. Refresh and validate element facts before dispatch, rejecting stale or disabled targets. Reports dispatch acknowledgement separately from observed after-state. Actions can change app data and network state. Text travels over private stdin transport; caller-marked sensitive text and password-control text are excluded from recorded parameters.",
     inputSchema: adbUiInputSchemas.perform_adb_ui_action,
     outputSchema: evidenceResultOf(adbUiResultSchemas.perform_adb_ui_action),
     examples: [

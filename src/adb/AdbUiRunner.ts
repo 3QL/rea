@@ -45,9 +45,10 @@ const REQUEST_BYTES = 16 * 1024;
 const RESPONSE_BYTES = 256 * 1024;
 const CAPTURE_BYTES = 1024 * 1024;
 const CLEANUP_MS = 5000;
+const PROTOCOL = 2;
 const envelope = z
   .strictObject({
-    protocol: z.literal(1),
+    protocol: z.literal(PROTOCOL),
     request_id: z.string().uuid().nullable(),
     instance_id: z.string().uuid(),
     // The JSON decoder owns JSON validity; named payload schemas own its facts.
@@ -62,6 +63,9 @@ const envelope = z
     "Inconsistent outcome fields",
   );
 type Reply = z.infer<typeof envelope>;
+type UiObservation = z.infer<
+  (typeof adbUiObservationSchemas)[AdbUiRequest["operation"]]
+>;
 type ReplyFailure = {
   readonly kind: "unavailable" | "protocol" | "capacity";
   readonly reason: string;
@@ -73,6 +77,7 @@ interface RemoteRequest {
   readonly instanceId: string;
   readonly requestId: string;
   readonly operation: string;
+  readonly socketPath: string;
   settled?: boolean;
   completion?: Reply;
 }
@@ -80,22 +85,27 @@ interface RemoteRequest {
 /** Parse the producer's terminal record, never a substring inside Android diagnostics. */
 export const parseAdbUiReply = (
   stdout: string,
+  channel: "control" | "input" = "control",
 ): Result<Reply, ReplyFailure> => {
   const fail = (reason: string, kind: ReplyFailure["kind"] = "protocol") =>
     err({ kind, reason });
-  const records = stdout
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith("Broadcast completed:"));
+  const records =
+    channel === "input"
+      ? [stdout.trim()]
+      : stdout
+          .split(/\r?\n/u)
+          .filter((line) => line.startsWith("Broadcast completed:"));
   if (records.length !== 1)
     return fail("Expected one completed UI runner broadcast");
-  const match =
-    /^Broadcast completed: result=-?\d+, data="REA_UI_V1:([A-Za-z0-9+/]+={0,2})"$/u.exec(
-      records[0]!,
-    );
+  const match = (
+    channel === "input"
+      ? /^REA_UI_V2:([A-Za-z0-9+/]+={0,2})$/u
+      : /^Broadcast completed: result=-?\d+, data="REA_UI_V2:([A-Za-z0-9+/]+={0,2})"$/u
+  ).exec(records[0]!);
   if (match === null)
     return fail(
       "The selected UI runner did not answer the REA protocol",
-      records[0]!.includes("REA_UI_V1:") ? "protocol" : "unavailable",
+      records[0]!.includes("REA_UI_V2:") ? "protocol" : "unavailable",
     );
   const encoded = match[1]!;
   if (encoded.length > Math.ceil(RESPONSE_BYTES / 3) * 4)
@@ -107,7 +117,7 @@ export const parseAdbUiReply = (
     const parsed = envelope.safeParse(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
     );
-    if (!parsed.success) return fail("UI response violated protocol v1");
+    if (!parsed.success) return fail("UI response violated protocol v2");
     return ok(parsed.data);
   } catch {
     return fail("UI response is not valid UTF-8 JSON");
@@ -180,35 +190,62 @@ export class AdbUiRunner {
     timeoutMs: number,
     signal?: AbortSignal,
     submission?: RemoteRequest,
+    socketPath?: string,
   ): Promise<Reply> {
     const json = JSON.stringify(payload);
     if (Buffer.byteLength(json) > REQUEST_BYTES)
       throw new AnalysisResourceConstraintError(
         operation,
         "transport",
-        "UI request exceeds the 16 KiB protocol budget (base64 expansion must fit host command-line limits)",
+        "UI request exceeds the 16 KiB retained-request protocol budget",
         { max_request_bytes: REQUEST_BYTES },
       );
+    if (socketPath === undefined && "input" in payload)
+      throw new AnalysisProtocolError(
+        "UI request bodies require the private stdin channel",
+      );
+    const encoded = Buffer.from(json).toString("base64");
     const runId = randomUUID();
     try {
       const result = await runOwnedCommand(
         {
           command: binary,
-          arguments: adbArguments(serial, [
-            "shell",
-            "am",
-            "broadcast",
-            "--receiver-foreground",
-            "--user",
-            "0",
-            "-a",
-            `${packageName}.REQUEST`,
-            "-p",
-            packageName,
-            "--es",
-            "request",
-            Buffer.from(json).toString("base64"),
-          ]),
+          arguments: adbArguments(
+            serial,
+            socketPath === undefined
+              ? [
+                  "shell",
+                  "am",
+                  "broadcast",
+                  "--receiver-foreground",
+                  "--user",
+                  "0",
+                  "-a",
+                  `${packageName}.REQUEST`,
+                  "-p",
+                  packageName,
+                  "--es",
+                  "request",
+                  encoded,
+                ]
+              : [
+                  "shell",
+                  "-T",
+                  "run-as",
+                  packageName,
+                  "--user",
+                  "0",
+                  "/system/bin/toybox",
+                  "nc",
+                  "-U",
+                  "-w",
+                  "5",
+                  "-W",
+                  "10",
+                  socketPath,
+                ],
+          ),
+          ...(socketPath === undefined ? {} : { stdin: "pipe" as const }),
           runId,
           expectedCommand: null,
           hostEnvironment: this.environment,
@@ -226,10 +263,14 @@ export class AdbUiRunner {
             this.#commands.set(owner, runId);
           },
           launcher: this.launcher,
+          ...(socketPath === undefined ? {} : { input: `${encoded}\n` }),
         },
       );
       await this.#settleCommands();
-      const parsed = parseAdbUiReply(result.stdout.text);
+      const parsed = parseAdbUiReply(
+        result.stdout.text,
+        socketPath === undefined ? "control" : "input",
+      );
       if (!parsed.ok) {
         const options = {
           capturedOutput: {
@@ -279,10 +320,13 @@ export class AdbUiRunner {
         ...(capturedOutput === undefined ? {} : { capturedOutput }),
       };
       if (
-        signal?.aborted ||
+        (signal?.aborted && cause === signal.reason) ||
         (cause instanceof OwnedCommandFailure && cause.reason === "cancelled")
       )
-        throw new AnalysisCancelledError(operation, options);
+        throw new AnalysisCancelledError(operation, {
+          ...options,
+          cause: signal?.aborted ? signal.reason : cause,
+        });
       if (cause instanceof OwnedCommandFailure && cause.reason === "timeout")
         throw new AnalysisTimeoutError(operation, timeoutMs, options);
       if (
@@ -327,7 +371,7 @@ export class AdbUiRunner {
             request.packageName,
             request.operation,
             {
-              protocol: 1,
+              protocol: PROTOCOL,
               operation: "cancel",
               request_id: randomUUID(),
               instance_id: request.instanceId,
@@ -367,6 +411,7 @@ export class AdbUiRunner {
           runner_package: request.packageName,
           runner_instance: request.instanceId,
           runner_user: 0,
+          socket_path: request.socketPath,
           reason: cause instanceof Error ? cause.message : String(cause),
         });
       }
@@ -402,7 +447,7 @@ export class AdbUiRunner {
       request.packageName,
       request.operation,
       {
-        protocol: 1,
+        protocol: PROTOCOL,
         operation: "forget",
         request_id: randomUUID(),
         instance_id: request.instanceId,
@@ -434,7 +479,11 @@ export class AdbUiRunner {
     try {
       await new Promise<void>((resolve, reject) => {
         const abort = () =>
-          reject(new AnalysisCancelledError(request.operation));
+          reject(
+            new AnalysisCancelledError(request.operation, {
+              cause: signal?.reason,
+            }),
+          );
         signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) abort();
         void predecessor.then(() => {
@@ -466,9 +515,13 @@ export class AdbUiRunner {
   ): Promise<Result<AnalysisExecution, AnalysisError>> {
     let primary: AnalysisError;
     let owned: RemoteRequest | undefined;
+    let observed: UiObservation | undefined;
     try {
       await this.#retryCleanup();
-      if (signal?.aborted) throw new AnalysisCancelledError(request.operation);
+      if (signal?.aborted)
+        throw new AnalysisCancelledError(request.operation, {
+          cause: signal.reason,
+        });
       const selected = this.environment[PACKAGE_ENV];
       const parsedPackage = adbPackageNameSchema.safeParse(
         selected === undefined || selected === "" ? DEFAULT_PACKAGE : selected,
@@ -484,7 +537,7 @@ export class AdbUiRunner {
         serial,
         packageName,
         request.operation,
-        { protocol: 1, request_id: randomUUID(), operation: "ping" },
+        { protocol: PROTOCOL, request_id: randomUUID(), operation: "ping" },
         10000,
         signal,
       );
@@ -494,7 +547,25 @@ export class AdbUiRunner {
           request.operation,
           ping.error!.reason,
         );
-      const identity = adbUiRunnerIdentitySchema.parse(ping.result);
+      const hello = z
+        .strictObject({
+          runner: adbUiRunnerIdentitySchema,
+          socket_path: z.string(),
+        })
+        .safeParse(ping.result);
+      if (!hello.success)
+        throw new AnalysisCapabilityUnavailableError(
+          "adb",
+          request.operation,
+          "Rebuild and start the matching debug UI runner with protocol v2 private stdin transport.",
+        );
+      const identity = hello.data.runner;
+      if (
+        hello.data.socket_path !== `files/rea-ui-${identity.instance_id}.sock`
+      )
+        throw new AnalysisProtocolError(
+          "UI runner socket does not belong to its reported instance",
+        );
       if (
         identity.package_name !== packageName ||
         identity.instance_id !== ping.instance_id
@@ -509,9 +580,10 @@ export class AdbUiRunner {
         instanceId: identity.instance_id,
         requestId: randomUUID(),
         operation: request.operation,
+        socketPath: hello.data.socket_path,
       };
       const payload = {
-        protocol: 1,
+        protocol: PROTOCOL,
         request_id: owned.requestId,
         instance_id: owned.instanceId,
         operation: request.operation,
@@ -530,11 +602,36 @@ export class AdbUiRunner {
         serial,
         packageName,
         request.operation,
-        payload,
+        {
+          protocol: PROTOCOL,
+          request_id: owned.requestId,
+          instance_id: owned.instanceId,
+          operation: "prepare",
+          target_operation: request.operation,
+        },
         10000,
         signal,
         owned,
       );
+      if (reply.instance_id !== owned.instanceId)
+        throw new AnalysisProtocolError(
+          "UI runner changed during request preparation",
+        );
+      if (!reply.ok) this.#pending.delete(owned.requestId);
+      else {
+        z.strictObject({ state: z.literal("prepared") }).parse(reply.result);
+        reply = await this.#send(
+          binary,
+          serial,
+          packageName,
+          request.operation,
+          payload,
+          10000,
+          signal,
+          undefined,
+          owned.socketPath,
+        );
+      }
       if (reply.instance_id !== owned.instanceId)
         throw new AnalysisProtocolError(
           "UI runner restarted while a request was outstanding",
@@ -552,7 +649,7 @@ export class AdbUiRunner {
               packageName,
               request.operation,
               {
-                protocol: 1,
+                protocol: PROTOCOL,
                 operation: "status",
                 request_id: randomUUID(),
                 instance_id: owned.instanceId,
@@ -593,6 +690,14 @@ export class AdbUiRunner {
                 );
               this.#rememberCompletion(owned, progress.response);
               reply = progress.response;
+              // Validate the report before acknowledgement/finalization can be
+              // interrupted, and retain the parsed facts through that phase.
+              observed = this.#validateObservation(
+                request,
+                owned,
+                reply,
+                signal,
+              );
               await this.#forget(owned, pollSignal);
               break;
             }
@@ -607,47 +712,12 @@ export class AdbUiRunner {
             );
           throw cause;
         }
-      } else this.#pending.delete(owned.requestId);
-      if (!reply.ok) {
-        const failure = reply.error!;
-        if (failure.kind === "timeout")
-          throw new AnalysisTimeoutError(
-            request.operation,
-            request.input.timeout_ms,
-          );
-        if (failure.kind === "cancelled")
-          throw new AnalysisCancelledError(request.operation);
-        if (failure.kind === "busy" || failure.kind === "capacity")
-          throw new AnalysisResourceConstraintError(
-            request.operation,
-            "capacity",
-            failure.reason,
-            null,
-          );
-        throw new AnalysisOutputError(request.operation, failure.kind, {
-          userMessage: failure.reason,
-          diagnostics: {
-            runner_failure: failure.kind,
-            runner_instance: owned.instanceId,
-          },
-          remediationAction:
-            "Inspect or find the current UI again, then select an enabled, visible element from that snapshot.",
-        });
       }
-      const observed = adbUiObservationSchemas[request.operation].parse(
-        reply.result,
-      );
-      const snapshot =
-        "before" in observed ? observed.before : observed.snapshot;
-      if (
-        observed.runner.instance_id !== owned.instanceId ||
-        snapshot.package_name !== request.input.package ||
-        snapshot.display_id !== request.input.display_id ||
-        snapshot.window_id_filter !== (request.input.window_id ?? null)
-      )
-        throw new AnalysisProtocolError(
-          "UI observation does not match the requested scope",
-        );
+      observed ??= this.#validateObservation(request, owned, reply, signal);
+      if (signal?.aborted)
+        throw new AnalysisCancelledError(request.operation, {
+          cause: signal.reason,
+        });
       return ok(
         createAnalysisExecution({ client, serial, ...observed }, provider, {
           limitations: [
@@ -659,8 +729,12 @@ export class AdbUiRunner {
       );
     } catch (cause) {
       primary =
-        signal?.aborted && !(cause instanceof AnalysisError)
-          ? new AnalysisCancelledError(request.operation, { cause })
+        signal?.aborted &&
+        (cause === signal.reason ||
+          (cause instanceof Error && cause.name === "AbortError"))
+          ? new AnalysisCancelledError(request.operation, {
+              cause: signal.reason,
+            })
           : cause instanceof AnalysisError
             ? cause
             : new AnalysisOutputError(
@@ -671,23 +745,28 @@ export class AdbUiRunner {
     }
     const retainCompleted = () => {
       if (!owned?.completion?.ok) return;
-      const parsed = adbUiObservationSchemas[request.operation].safeParse(
-        owned.completion.result,
-      );
-      if (!parsed.success) return;
-      const snapshot =
-        "before" in parsed.data ? parsed.data.before : parsed.data.snapshot;
-      if (
-        parsed.data.runner.instance_id !== owned.instanceId ||
-        snapshot.package_name !== request.input.package ||
-        snapshot.display_id !== request.input.display_id ||
-        snapshot.window_id_filter !== (request.input.window_id ?? null)
-      )
+      try {
+        observed ??= this.#validateObservation(
+          request,
+          owned,
+          owned.completion,
+          signal,
+        );
+      } catch (cause) {
+        if (
+          primary instanceof AnalysisCancelledError &&
+          cause instanceof AnalysisError
+        ) {
+          const cancellation = primary;
+          primary = cause;
+          primary.retainSecondaryFailure(cancellation, {});
+        }
         return;
+      }
       primary.retainPartialObservation({
         provider_id: "adb",
         operation: request.operation,
-        result: { client, serial: request.input.serial, ...parsed.data },
+        result: { client, serial: request.input.serial, ...observed },
       });
     };
     try {
@@ -707,11 +786,69 @@ export class AdbUiRunner {
         primary,
         cleanup,
         request.operation,
-      );
+      ).bindCleanupDependencies([primary, cleanup]);
       this.#trackCleanupError(combined);
       return err(combined);
     }
     retainCompleted();
     return err(primary);
+  }
+
+  #validateObservation(
+    request: AdbUiRequest,
+    owned: RemoteRequest,
+    reply: Reply,
+    signal?: AbortSignal,
+  ): UiObservation {
+    if (!reply.ok) {
+      const failure = reply.error!;
+      if (failure.kind === "timeout")
+        throw new AnalysisTimeoutError(
+          request.operation,
+          request.input.timeout_ms,
+        );
+      if (failure.kind === "cancelled")
+        throw new AnalysisCancelledError(request.operation, {
+          cause: signal?.aborted ? signal.reason : failure.reason,
+        });
+      if (failure.kind === "busy" || failure.kind === "capacity")
+        throw new AnalysisResourceConstraintError(
+          request.operation,
+          "capacity",
+          failure.reason,
+          null,
+        );
+      throw new AnalysisOutputError(request.operation, failure.kind, {
+        userMessage: failure.reason,
+        diagnostics: {
+          runner_failure: failure.kind,
+          runner_instance: owned.instanceId,
+        },
+        remediationAction:
+          "Inspect or find the current UI again, then select an enabled, visible element from that snapshot.",
+      });
+    }
+    const parsed = adbUiObservationSchemas[request.operation].safeParse(
+      reply.result,
+    );
+    if (!parsed.success)
+      throw new AnalysisOutputError(
+        request.operation,
+        "Invalid UI runner response",
+        { cause: parsed.error },
+      );
+    const observation = parsed.data;
+    const snapshot =
+      "before" in observation ? observation.before : observation.snapshot;
+    if (
+      observation.runner.instance_id !== owned.instanceId ||
+      snapshot.package_name !== request.input.package ||
+      snapshot.display_id !== request.input.display_id ||
+      snapshot.window_id_filter !== (request.input.window_id ?? null)
+    )
+      throw new AnalysisProtocolError(
+        "UI observation does not match the requested scope",
+      );
+    return observation;
   }
 }

@@ -1,16 +1,19 @@
 import { z } from "incur";
-import { AnalysisError } from "../domain/analysisErrorBase.js";
+import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { AdbDeviceAnalysisService } from "../application/adb/AdbDeviceAnalysisService.js";
 import type { AdbDeviceAnalysisPort } from "../application/adb/AdbDeviceAnalysisPort.js";
 import { createAdbDeviceAnalysisProvider } from "../composition/adb.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { logCliCommand } from "../cliLogging.js";
-import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { AdbOperation } from "../domain/adb/adbDeviceAnalysis.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
-import { withCommandCancellation } from "./commandCancellation.js";
+import {
+  withCommandCancellation,
+  type CommandCancellationHost,
+} from "./commandCancellation.js";
 import { parseCliJsonInput } from "../cliJsonInput.js";
+import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 
 /** Expose the same explicit ADB requests through one-shot CLI commands. */
 export const registerAdbCommands = (
@@ -20,22 +23,34 @@ export const registerAdbCommands = (
   provider: AdbDeviceAnalysisPort = createAdbDeviceAnalysisProvider(
     environment,
   ),
+  cancellationHost: CommandCancellationHost = process,
 ): void => {
   const service = new AdbDeviceAnalysisService(provider);
-  const execute = (name: string, operation: AdbOperation, input: unknown) =>
-    withCommandCancellation((signal) =>
-      logCliCommand(logger, name, async () => {
-        const result = await service.execute(operation, input, { signal });
-        try {
-          await provider.close();
-        } catch (cause) {
-          if (cause instanceof AnalysisError)
-            return projectAnalysisError(cause);
-          throw cause;
-        }
-        return result.ok ? result.value : projectAnalysisError(result.error);
-      }),
+  const executeResolved = (
+    name: string,
+    operation: AdbOperation,
+    resolveInput: (
+      signal: AbortSignal,
+    ) => Promise<Awaited<ReturnType<typeof parseCliJsonInput>>>,
+  ) =>
+    withCommandCancellation(
+      (signal) =>
+        logCliCommand(logger, name, async () => {
+          const input = await resolveInput(signal);
+          if (!input.ok) return input.error;
+          return finishAnalysisCommand(
+            () => service.execute(operation, input.value, { signal }),
+            provider,
+            "adb",
+            operation,
+            undefined,
+            signal,
+          );
+        }),
+      cancellationHost,
     );
+  const execute = (name: string, operation: AdbOperation, input: unknown) =>
+    executeResolved(name, operation, async () => ({ ok: true, value: input }));
 
   const serial = z
     .string()
@@ -73,10 +88,10 @@ export const registerAdbCommands = (
             "MCP input object as inline JSON or a local JSON file path",
           ),
       }),
-      run: async ({ args }) => {
-        const input = await parseCliJsonInput(args.inputJson, operation);
-        return input.ok ? execute(name, operation, input.value) : input.error;
-      },
+      run: ({ args }) =>
+        executeResolved(name, operation, (signal) =>
+          parseCliJsonInput(args.inputJson, operation, signal),
+        ),
     });
   }
 
@@ -390,12 +405,30 @@ export const registerAdbCommands = (
         ),
     }),
     run: ({ args, options }) => {
-      const extras = options.extra.map((entry) => {
+      const extras: {
+        readonly type: "string" | "boolean" | "int" | "long" | "float";
+        readonly key: string;
+        readonly value: string;
+      }[] = [];
+      for (const [index, entry] of options.extra.entries()) {
         const first = entry.indexOf(":");
         const second = entry.indexOf(":", first + 1);
         if (first === -1 || second === -1)
-          throw new Error(`--extra expects type:key:value, received: ${entry}`);
-        return {
+          return logCliCommand(
+            logger,
+            CLI_COMMANDS.startAdbActivity,
+            async () => {
+              throw new AnalysisInputError("start_adb_activity", undefined, [
+                {
+                  path: ["extras", index],
+                  reason: "invalid_format",
+                  message: "Expected --extra in type:key:value form.",
+                  expected: "type:key:value",
+                },
+              ]);
+            },
+          );
+        extras.push({
           type: entry.slice(0, first) as
             | "string"
             | "boolean"
@@ -404,8 +437,8 @@ export const registerAdbCommands = (
             | "float",
           key: entry.slice(first + 1, second),
           value: entry.slice(second + 1),
-        };
-      });
+        });
+      }
       return execute(CLI_COMMANDS.startAdbActivity, "start_adb_activity", {
         serial: args.serial,
         action: args.action,

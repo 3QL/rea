@@ -14,11 +14,22 @@ built locally and installed through the existing explicit ADB installation tool.
 The instrumentation targets its own package and observes other apps' accessible
 UI, including release apps; it does not inject code into those target processes.
 
-Protocol v1 uses package-scoped, user-0 broadcasts protected by
-`android.permission.DUMP`. Submission returns immediately; status, cancellation
-and acknowledgement are separate bounded messages. The receiver remains able to
-cancel a running operation. One worker owns UI operations and the most recent
-snapshot. Retained results and sensitive-value state have explicit capacities.
+Runner 0.2.0 uses protocol v2. Package-scoped, user-0 broadcasts protected by
+`android.permission.DUMP` carry only control metadata. A prepared request's body
+travels through owned stdin, `adb shell -T`, and `run-as`/`toybox nc -U` into an
+instance-specific Unix socket in the helper's private files directory. The
+socket checks its peer UID. UI request bodies are not placed in ADB or device argv.
+
+Use the debug build and an Android image with Unix-socket support in toybox nc.
+Rebuild the runner when upgrading from protocol v1. Preparation is cancellable
+before body delivery; forgotten reservations reject late input. Status,
+cancellation and acknowledgement remain reachable independently of the input
+connection. One worker owns UI operations and the most recent snapshot.
+Retained results, request bodies and sensitive-value state have explicit capacities.
+
+The operator-owned runner owns `files/rea-ui-<instance>.sock`. Normal teardown
+checks its inode before removing it. A force-stopped runner can leave that socket
+node until package removal; payload data is carried in memory, not written there.
 
 The operator owns start/stop and APK installation. Host REA sessions own their
 individual requests, not the instrumentation process. No permission-dialog

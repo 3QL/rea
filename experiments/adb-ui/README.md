@@ -83,12 +83,20 @@ observed keyboard dismissal, lazy-list scrolling and fixture cleanup.
 Boundary tests separately exercise malformed replies, incorrect request
 identity, unavailable runners and retained cleanup/acknowledgement errors.
 
-The warm native View workflow took 44.62 s elapsed and 25.08 s host CPU, with
-923,791,360 bytes peak host cgroup memory and verified host payload cleanup.
-The observer is included; documentation checks ran concurrently on the host.
-External emulator/ADB-server memory and CPU, cold runs, Compose resource costs
-and agent-token costs are unmeasured. Earlier XML-prototype measurements
-cover different work and are not comparative performance baselines.
+With protocol v2 on the merged main baseline, the warm native View workflow took
+68.99 s elapsed and 37.51 s host CPU, with 944,799,744 bytes peak host cgroup memory
+and verified host payload cleanup, including the observer. The input channel adds
+one preparation exchange so cancellation can settle before body delivery. The
+earlier v1 run measured 44.62 s / 25.08 s / 923,791,360 bytes on a different code
+baseline with concurrent documentation checks; these are not a controlled
+transport-only comparison. External emulator/ADB-server resources, cold runs,
+Compose resource costs and agent-token costs are unmeasured.
+
+A separate argv-audited native/Compose/node-validation run recorded 621 ADB
+commands: 399 metadata-only control broadcasts and 80 private stdin submissions.
+No UI request body or tested input value appeared in their arguments. Direct
+shell-UID access to the private socket was refused; valid calls used `run-as`.
+That audit wrapper's overhead is excluded from the measurement above.
 
 The runner's accessibility connection flags are consistent across its modern
 and classic APIs. Long operations run outside broadcast delivery; immediate

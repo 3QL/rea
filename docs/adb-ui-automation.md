@@ -22,9 +22,14 @@ adb -s emulator-5554 shell am instrument --user 0 -w \
 ```
 
 Keep that instrumentation command running in a terminal. `REA_UI_READY` identifies
-the new runner instance. The operator owns its installation and lifetime. REA
-contacts the existing runner through short, package-scoped broadcasts for Android
-user 0; its receiver requires the shell's `android.permission.DUMP` permission.
+the new runner instance. The operator owns its installation and lifetime. Runner
+0.2.0 uses protocol v2; rebuild an older runner when updating the host CLI/MCP.
+Short, package-scoped broadcasts for Android user 0 carry control metadata and
+require the shell's `android.permission.DUMP` permission. Request bodies travel
+over stdin and a private Unix socket through `run-as` and Android's `toybox nc -U`.
+The helper must be debuggable, and toybox must support Unix sockets. The socket
+checks the connecting app UID; the transport puts no UI request body in ADB or
+device argument vectors.
 The helper preserves other accessibility services with
 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` and registers no automatic dialog handlers.
 
@@ -48,6 +53,12 @@ Selectors combine text, content description, resource ID, class name, ancestor
 resource ID and observed states. Text matching is case-sensitive and supports
 `exact` or `contains`. An empty selector inventories the captured scope. Omitted
 states mean no filter; `enabled: false` specifically selects disabled controls.
+
+For sensitive CLI text, supply the input as a local JSON file path. REA forwards
+the file's request body through stdin to the runner.
+JSON-file reads share the command's cancellation and failure-status boundary;
+malformed or missing input fails before device dispatch. Cancellation during
+final acknowledgement or provider close retains available observations.
 
 Results preserve all observed matches, including duplicate labels. Each match
 has a snapshot-scoped `id`, raw and UI Automator-visible bounds, package/class
@@ -114,7 +125,7 @@ application state is left as-is.
   retained facts also share a budget derived from reply capacity. The Binder reply
   budget can be reached sooner; its 256 KiB JSON ceiling accounts for base64 and
   Binder's UTF-16 string expansion. Requests have a 16 KiB JSON budget before
-  base64 encoding to fit supported host command-line limits.
+  base64 encoding to bound retained requests and private input frames.
 - Password-marked text is excluded. `set_text` with `sensitive: true` redacts that
   action's recorded parameter; the runner also omits UI text and description
   fields containing that literal value for its lifetime. Its bounded sensitive-value store refuses
@@ -124,19 +135,23 @@ application state is left as-is.
 - Runtime observations use `controlled-replay` Evidence authority and preserve
   the caller-selected device, scope and runner-reported identity. No association
   with a local APK's bytes is established by an equal package name.
-- Work is acknowledged immediately, then polled by request ID. Long UI waits do
-  not hold an ordered broadcast open and block cancellation. Replies remain
-  retained until acknowledged; at most 16 unacknowledged requests are admitted.
+- Work is prepared by request ID before its body is sent over the private stdin
+  channel. A cancelled/forgotten preparation rejects late input. Submission is
+  acknowledged immediately, then polled by request ID; long UI waits and blocked
+  input sockets leave the control channel reachable. Replies remain retained
+  until acknowledged; at most 16 prepared/unacknowledged requests are admitted.
 - Cancellation settles host commands, cancels only the owned remote request,
   waits for its work to settle and acknowledges its retained result. A separate
   five-second cleanup budget applies. Completed facts survive acknowledgement
   failures as partial observations. Failed cleanup retains exact request/runner
   identities for later retry; another runner instance cannot prove old cleanup.
-  Pending ownership begins at the process launch attempt. Preparation cancellation
-  or proven process-creation failure leaves no remote request to reconcile, so
-  subsequent UI calls in the same session remain usable.
-  A missing request after interrupted submission is unresolved delivery, not
+  Host launch preparation creates no remote owner. Once a request is prepared
+  on the runner, a later stdin transport failure reconciles that reservation
+  before subsequent UI calls. A missing request after interrupted preparation is unresolved delivery, not
   proof of cancellation; cleanup retains it until delivery can be reconciled.
+- One-shot CLI close failures preserve the original operation error and any
+  completed/partial observation, so an acknowledgement failure does not hide
+  a dispatched action.
 
 End the operator-owned runner explicitly when finished:
 
@@ -144,6 +159,10 @@ End the operator-owned runner explicitly when finished:
 rea stop-adb-app emulator-5554 dev.rea.uiautomator
 rea uninstall-adb-package emulator-5554 dev.rea.uiautomator
 ```
+
+The instance socket lives in the helper's private files directory. Normal teardown
+removes the identity-checked socket node. Force-stop may leave the node until
+uninstall; request payloads are not stored in that filesystem entry.
 
 ## Verification
 

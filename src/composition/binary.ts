@@ -1,3 +1,4 @@
+import { isAppleDispatchMetadataTarget } from "../domain/native/objcSwiftMetadata.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import type { AppConfig } from "../config/types.js";
 import type { BinarySession } from "../application/binary/BinarySession.js";
@@ -27,6 +28,27 @@ export const createBinarySession = (
   config: AppConfig,
   logger: Logger,
   selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+): BinarySession =>
+  composeDeepBinarySession(config, logger, selectedEnvironment);
+
+/** Prefer byte-backed dispatch inspection while retaining deep symbol fallback. */
+export const createNativeDispatchBinarySession = (
+  config: AppConfig,
+  logger: Logger,
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+): BinarySession =>
+  composeDeepBinarySession(
+    config,
+    logger,
+    selectedEnvironment,
+    "inspect_native_dispatch_metadata",
+  );
+
+const composeDeepBinarySession = (
+  config: AppConfig,
+  logger: Logger,
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+  inspection?: "inspect_native_dispatch_metadata",
 ): BinarySession => {
   const environment = snapshotEnvironment(selectedEnvironment);
   const hopper = new HopperProvider(config, logger, environment);
@@ -37,9 +59,22 @@ export const createBinarySession = (
   assertBinaryLaneProviderIds(
     laneProviders.map((provider) => provider.identity().id),
   );
+  const auxiliaryDeclarations =
+    auxiliaryAnalysisProviderDeclarations(environment);
+  const nativeInspectionAvailable =
+    inspection !== undefined &&
+    auxiliaryDeclarations.some(({ capabilities }) =>
+      capabilities.some(
+        ({ operation, available }) => operation === inspection && available,
+      ),
+    );
   return composeBinarySession(
-    new AnalysisProviderRegistry(laneProviders, config.analysisProvider),
-    auxiliaryAnalysisProviderDeclarations(environment).map(
+    new AnalysisProviderRegistry(
+      laneProviders,
+      config.analysisProvider,
+      nativeInspectionAvailable ? isAppleDispatchMetadataTarget : undefined,
+    ),
+    auxiliaryDeclarations.map(
       (declaration) => new LazyAnalysisProvider(declaration),
     ),
   );
@@ -60,6 +95,21 @@ export const createArtifactBinarySession = (
     composeBinarySession(new AnalysisProviderRegistry([]), [
       new ArtifactProvider(
         snapshotEnvironment(selectedEnvironment, platform),
+        platform,
+      ),
+    ]),
+  );
+
+/** Compose native inspection utilities without candidates for deep analysis. */
+export const createNativeBinarySession = (
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+  platform: NodeJS.Platform = process.platform,
+): Promise<BinarySession> =>
+  import("../native/NativeMacOSProvider.js").then(({ NativeMacOSProvider }) =>
+    composeBinarySession(new AnalysisProviderRegistry([]), [
+      new NativeMacOSProvider(
+        snapshotEnvironment(selectedEnvironment, platform),
+        undefined,
         platform,
       ),
     ]),

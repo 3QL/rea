@@ -7,12 +7,13 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
 } from "../domain/analysisErrorCore.js";
-import { createEvidence, type Evidence } from "../domain/evidence.js";
-import { jsonObjectSchema, type JsonValue } from "../domain/jsonValue.js";
+import type { Evidence } from "../domain/evidence.js";
+import type { JsonValue } from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
-import type {
-  AnalysisExecution,
-  ExecutionOptions,
+import {
+  createAnalysisExecutionEvidence,
+  type AnalysisExecution,
+  type ExecutionOptions,
 } from "./AnalysisProvider.js";
 
 /** Validated caller-selected request carrying its operation input. */
@@ -63,23 +64,12 @@ export const executeProviderOperation = async <
   const executed = await provider.execute(request.data, options);
   if (!executed.ok) return executed;
   const execution = executed.value;
-  const evidence = createEvidence(
-    execution.subject ?? undefined,
-    execution.provider,
-    {
-      operation,
-      parameters:
-        projection?.parameters?.(request.data, execution) ??
-        jsonObjectSchema.parse(request.data.input),
-      result: execution.result,
-      rawResult: execution.rawResult,
-      limitations: execution.limitations,
-      locations: execution.locations,
-      confidence,
-      ...(projection?.authority === undefined
-        ? {}
-        : { authority: projection.authority(request.data) }),
-    },
+  const evidence = createAnalysisExecutionEvidence(
+    operation,
+    projection?.parameters?.(request.data, execution) ?? request.data.input,
+    execution,
+    confidence,
+    projection?.authority?.(request.data),
   );
   return completeProviderEvidence(evidence, options?.signal);
 };

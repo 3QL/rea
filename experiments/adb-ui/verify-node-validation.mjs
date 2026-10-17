@@ -299,7 +299,15 @@ await withCommands((run, signal, settleCommands) =>
           assert.equal(facts.action_error.kind, "uiautomator_error");
         }
         if (change === "leave_on_click") {
-          assert.equal(facts.action_error.kind, "focus_changed");
+          // Window departure can invalidate the retained node before the focus
+          // guard observes it. Both refusals must retain the first-click facts.
+          if (facts.action_error.kind === "uiautomator_error")
+            assert.equal(facts.action_error.reason, "StaleObjectException");
+          else assert.equal(facts.action_error.kind, "focus_changed");
+          const foreground = facts.after?.foreground_package;
+          assert.equal(typeof foreground, "string");
+          assert(foreground.length > 0);
+          assert.notEqual(foreground, scope.package);
           await retain("relaunch", await call("start_adb_app", scope));
         }
       }

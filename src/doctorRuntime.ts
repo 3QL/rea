@@ -16,10 +16,12 @@ import { ok } from "./domain/result.js";
 /** Compose provider diagnostics at the outer CLI adapter boundary. */
 export const createSystemDoctorHost = (
   environment: Readonly<NodeJS.ProcessEnv> = process.env,
+  signal?: AbortSignal,
 ): DoctorHost => {
   const jebRegistration = inspectJebRegistration(environment);
   return systemDoctorHost({
     environment,
+    ...(signal === undefined ? {} : { signal }),
     providerRegistrationEnvironment: () =>
       jebRegistration.registrationEnvironment,
     resolveProviderRequestBudget: (
@@ -37,8 +39,12 @@ export const createSystemDoctorHost = (
       // parser-owned error when IDA itself was explicitly selected.
       return analysisProvider === "ida" ? registration : ok(undefined);
     },
-    providerInspections: async (fileCloseResources) => [
-      await inspectSystemGhidraProvider(environment),
+    providerInspections: async (fileCloseResources, inspectionSignal) => [
+      await inspectSystemGhidraProvider(
+        environment,
+        fileCloseResources,
+        inspectionSignal,
+      ),
       inspectIdaRegistration(environment.REA_IDA_MCP_CONFIG),
       jebRegistration,
       await inspectJadxProvider(environment),

@@ -535,9 +535,9 @@ public final class ReaUiRunner extends Instrumentation {
         kind.equals("key_event") ? null : snapshot.nodes.get(input.getString("element_id"));
     if (!kind.equals("key_event") && selected == null)
       throw new Refusal("stale_element", "Element does not belong to the selected snapshot");
-    if (!snapshot.packageName.equals(device.getCurrentPackageName()))
-      throw new Refusal("focus_changed", "Expected package is not in the active window");
-    AccessibilityNodeInfo selectedNode = selected == null ? null : refreshNode(selected);
+    requireForeground(snapshot);
+    AccessibilityNodeInfo selectedNode =
+        selected == null ? null : refreshNode(selected, NodeValidation.SNAPSHOT);
     call.check();
     JSONObject before = snapshot.json(false);
     JSONObject selectedFacts = selected == null ? null : selected.facts;
@@ -557,7 +557,9 @@ public final class ReaUiRunner extends Instrumentation {
           attempted = true;
           selected.object.click();
           call.check();
-          refreshNode(selected);
+          requireForeground(snapshot);
+          refreshNode(selected, NodeValidation.CLICK_CONTINUATION);
+          call.check();
           selected.object.click();
           break;
         case "long_press":
@@ -604,7 +606,7 @@ public final class ReaUiRunner extends Instrumentation {
                 || destination.facts.getInt("window_id") != selected.facts.getInt("window_id"))
               throw new Refusal(
                   "stale_element", "Drag destination must belong to the same captured window");
-            refreshNode(destination);
+            refreshNode(destination, NodeValidation.SNAPSHOT);
             Rect bounds = destination.object.getVisibleBounds();
             if (bounds.isEmpty())
               throw new Refusal("unusable_element", "Drag destination is not visible");
@@ -697,7 +699,18 @@ public final class ReaUiRunner extends Instrumentation {
     }
   }
 
-  private static AccessibilityNodeInfo refreshNode(Node selected) throws Exception {
+  private void requireForeground(Snapshot snapshot) throws Refusal {
+    if (!snapshot.packageName.equals(device.getCurrentPackageName()))
+      throw new Refusal("focus_changed", "Expected package is not in the active window");
+  }
+
+  private enum NodeValidation {
+    SNAPSHOT,
+    CLICK_CONTINUATION
+  }
+
+  private static AccessibilityNodeInfo refreshNode(Node selected, NodeValidation validation)
+      throws Exception {
     // UI Automator 2.4.0 refreshes here and throws StaleObjectException if the
     // retained node cannot be refreshed. Keep freshness owned by that API.
     AccessibilityNodeInfo current = selected.object.getAccessibilityNodeInfo();
@@ -708,11 +721,14 @@ public final class ReaUiRunner extends Instrumentation {
             selected.facts.getString("id"),
             nullable(selected.facts, "parent_id"),
             selected.facts.getInt("window_id"));
-    // Compare every captured node fact, including control state. Snapshot-derived
-    // click targets are added by linkClickTargets, not by this producer.
+    // Admission compares every captured fact. Between clicks, presentation and
+    // control state can have changed; identity, geometry and capabilities must
+    // still match. Never replace the original facts returned in selected_element.
+    // Snapshot-derived click targets are added by linkClickTargets, not here.
     java.util.Iterator<String> keys = fresh.keys();
     while (keys.hasNext()) {
       String key = keys.next();
+      if (validation == NodeValidation.CLICK_CONTINUATION && mayChangeAfterClick(key)) continue;
       if (!sameFact(fresh.get(key), selected.facts.get(key)))
         throw new Refusal("stale_element", "Selected element changed: " + key);
     }
@@ -732,6 +748,19 @@ public final class ReaUiRunner extends Instrumentation {
         || visible.getInt("bottom") <= visible.getInt("top"))
       throw new Refusal("unusable_element", "Selected element is disabled or not visible");
     return current;
+  }
+
+  private static boolean mayChangeAfterClick(String fact) {
+    switch (fact) {
+      case "checked":
+      case "selected":
+      case "focused":
+      case "text":
+      case "content_description":
+        return true;
+      default:
+        return false;
+    }
   }
 
   /** Compare producer-owned scalar/rectangle facts without conflating null and "null". */

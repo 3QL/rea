@@ -209,6 +209,100 @@ await withCommands((run, signal, settleCommands) =>
       const toggledState = await mutate("observe");
       assert.equal(toggledState.checked, false);
       assert.equal(toggledState.toggle_clicks, 1);
+
+      // Initial selection freshness remains mandatory for a multi-click action.
+      await mutate("reset");
+      const staleDouble = await find("toggle", { checked: false });
+      await mutate("checked");
+      const staleDoubleResult = await invoke(staleDouble, {
+        kind: "double_tap",
+      });
+      assert.equal(staleDoubleResult.reply.isError, true);
+      assert.equal(
+        staleDoubleResult.data.error.details.diagnostics.runner_failure,
+        "stale_element",
+      );
+      assert.equal((await mutate("observe")).toggle_clicks, 0);
+
+      for (const change of ["none", "relabel_on_click", "input_focus"]) {
+        await mutate("reset");
+        if (change === "relabel_on_click") await mutate(change);
+        if (change === "input_focus") await mutate("focused");
+        const selected = await find(
+          change === "input_focus" ? "entry" : "toggle",
+        );
+        if (change === "input_focus")
+          assert.equal(selected.matches[0].focused, false);
+        const result = await invoke(selected, { kind: "double_tap" });
+        assert.notEqual(result.reply.isError, true);
+        const facts = toolContract("perform_adb_ui_action").outputSchema.parse(
+          result.data,
+        ).normalized_result;
+        const after = await mutate("observe");
+        const delivered =
+          change === "input_focus"
+            ? after.input_touch_ups === 2 && after.input_focused === true
+            : after.toggle_clicks === 2 && after.checked === false;
+        if (
+          !facts.action_completed ||
+          facts.action_error !== null ||
+          !delivered
+        )
+          failures.push({
+            mutation: `double_tap:${change}`,
+            reason: "First-click state change prevented the second click",
+            response: result.data,
+            after,
+          });
+        assert.deepEqual(facts.selected_element, selected.matches[0]);
+        if (change === "relabel_on_click" && delivered)
+          assert.equal(after.toggle_text, "Toggled 2");
+      }
+      // Dismiss the input keyboard before selecting lower controls.
+      await call("perform_adb_ui_action", {
+        ...scope,
+        snapshot_id: (await find("entry")).snapshot.id,
+        action: { kind: "key_event", key_code: 4 },
+      });
+      for (const change of [
+        "disable_on_click",
+        "move_on_click",
+        "detach_on_click",
+        "leave_on_click",
+      ]) {
+        await mutate("reset");
+        await mutate(change);
+        const selected = await find("toggle");
+        const result = await invoke(selected, { kind: "double_tap" });
+        assert.notEqual(result.reply.isError, true);
+        const facts = toolContract("perform_adb_ui_action").outputSchema.parse(
+          result.data,
+        ).normalized_result;
+        const after = await mutate("observe");
+        assert.equal(facts.dispatch_attempted, true);
+        assert.equal(facts.action_completed, false);
+        assert.notEqual(facts.action_error, null);
+        assert.equal(facts.before.id, selected.snapshot.id);
+        assert.deepEqual(facts.selected_element, selected.matches[0]);
+        assert.equal(after.toggle_clicks, 1);
+        assert.equal(after.checked, true);
+        if (change === "disable_on_click") {
+          assert.equal(after.toggle_enabled, false);
+          assert.match(facts.action_error.reason, /enabled/u);
+        }
+        if (change === "move_on_click") {
+          assert.equal(after.toggle_translation_x, 60);
+          assert.match(facts.action_error.reason, /bounds/u);
+        }
+        if (change === "detach_on_click") {
+          assert.equal(after.toggle_attached, false);
+          assert.equal(facts.action_error.kind, "uiautomator_error");
+        }
+        if (change === "leave_on_click") {
+          assert.equal(facts.action_error.kind, "focus_changed");
+          await retain("relaunch", await call("start_adb_app", scope));
+        }
+      }
       await mutate("reset");
       await mutate("password");
       const password = await find("entry");
@@ -256,5 +350,5 @@ assert.deepEqual(
   "Stale node validation failed; retained observations describe each case",
 );
 console.log(
-  "Node validation: disabled/moved/removed/password and checked/selected/focused/checkable transitions refused without dispatch; fresh checked control toggled; password text redacted and ordinary text preserved; fixture cleanup passed",
+  "Node validation: stale selections refused; double taps tolerate first-click state changes and retain partial outcomes on target loss; password text redacted and ordinary text preserved; fixture cleanup passed",
 );

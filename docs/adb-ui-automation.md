@@ -96,7 +96,7 @@ Replace the example IDs with the actual discovery result. The primitives are:
 | `key_event`   | `key_code`, optional `meta_state` | Send a key to the foreground package on display 0; omit `element_id` |
 
 Directions are `up`, `down`, `left` or `right`; percent is greater than zero and
-at most one. Refresh checks compare all captured node facts, rejecting changed
+at most one. Before dispatch, refresh checks compare all captured node facts, rejecting changed
 checked/selected/focused/checkable/password state, disabled/invisible targets
 and inactive windows. Snapshot-derived clickable-parent links are separate from
 the refreshed node facts.
@@ -105,6 +105,13 @@ text entry consumes that validated node so its password classification matches
 the selection used to redact Evidence parameters. No first matching element is silently chosen.
 Snapshots and input dispatch are sequential, so UI changes between observations
 remain possible.
+
+Between the two clicks of `double_tap`, checked/selected/focused state, text and
+description may change. The continuation still checks the same target's identity,
+geometry, capabilities, visibility and active window. `selected_element` retains
+the original selection. If the second click is refused, `dispatch_attempted` stays
+true, `action_completed` is false and `action_error` describes the interruption;
+the first click may already have changed application state.
 
 `dispatch_attempted` and `action_completed` describe the provider call. A click
 returning does not prove that navigation, saving or another app outcome occurred.

@@ -13,6 +13,7 @@ import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
 import android.util.Base64;
 import android.view.DragEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -30,6 +31,8 @@ import org.json.JSONObject;
 public final class Main extends Activity {
   private int taps = 0;
   private int toggleClicks = 0;
+  private int inputTouchUps = 0;
+  private String toggleClickMutation = "none";
   private boolean toggleCheckable = true;
   private BroadcastReceiver mutations;
 
@@ -42,6 +45,11 @@ public final class Main extends Activity {
     input.setId(id("entry"));
     input.setSingleLine(true);
     input.setContentDescription("rea-input");
+    input.setOnTouchListener(
+        (view, event) -> {
+          if (event.getAction() == MotionEvent.ACTION_UP) inputTouchUps++;
+          return false;
+        });
     input.setAccessibilityDelegate(
         new View.AccessibilityDelegate() {
           @Override
@@ -126,7 +134,29 @@ public final class Main extends Activity {
     CheckBox toggle = new CheckBox(this);
     toggle.setId(id("toggle"));
     toggle.setText("Toggle");
-    toggle.setOnClickListener(view -> toggleClicks++);
+    toggle.setOnClickListener(
+        view -> {
+          toggleClicks++;
+          switch (toggleClickMutation) {
+            case "disable_on_click":
+              toggle.setEnabled(false);
+              break;
+            case "move_on_click":
+              toggle.setTranslationX(60);
+              break;
+            case "detach_on_click":
+              layout.removeView(toggle);
+              break;
+            case "leave_on_click":
+              startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME));
+              break;
+            case "relabel_on_click":
+              toggle.setText("Toggled " + toggleClicks);
+              toggle.setContentDescription("Toggle count " + toggleClicks);
+              toggle.setSelected(toggle.isChecked());
+              break;
+          }
+        });
     toggle.setAccessibilityDelegate(
         new View.AccessibilityDelegate() {
           @Override
@@ -194,6 +224,13 @@ public final class Main extends Activity {
                 break;
               case "observe":
                 break;
+              case "disable_on_click":
+              case "move_on_click":
+              case "detach_on_click":
+              case "leave_on_click":
+              case "relabel_on_click":
+                toggleClickMutation = mutation;
+                break;
               case "reset":
                 if (button.getParent() == null) layout.addView(button, 1);
                 button.setEnabled(true);
@@ -201,6 +238,13 @@ public final class Main extends Activity {
                 input.setRawInputType(InputType.TYPE_CLASS_TEXT);
                 input.setTransformationMethod(null);
                 input.setText("");
+                inputTouchUps = 0;
+                toggleClickMutation = "none";
+                if (toggle.getParent() == null) layout.addView(toggle, layout.indexOfChild(scroll));
+                toggle.setEnabled(true);
+                toggle.setTranslationX(0);
+                toggle.setText("Toggle");
+                toggle.setContentDescription(null);
                 toggle.setChecked(false);
                 toggle.setSelected(false);
                 toggle.setFocusableInTouchMode(false);
@@ -226,10 +270,17 @@ public final class Main extends Activity {
                           "password",
                           input.getTransformationMethod() instanceof PasswordTransformationMethod)
                       .put("input_text", input.getText().toString())
+                      .put("input_focused", input.hasFocus())
+                      .put("input_touch_ups", inputTouchUps)
                       .put("checked", toggleState.isChecked())
                       .put("selected", toggleState.isSelected())
                       .put("focused", toggleState.isFocused())
                       .put("checkable", toggleState.isCheckable())
+                      .put("toggle_enabled", toggle.isEnabled())
+                      .put("toggle_translation_x", toggle.getTranslationX())
+                      .put("toggle_attached", toggle.getParent() != null)
+                      .put("toggle_text", toggle.getText().toString())
+                      .put("on_click", toggleClickMutation)
                       .put("toggle_clicks", toggleClicks);
               setResultData(
                   Base64.encodeToString(

@@ -35,6 +35,12 @@ is also stale. Freshly selected password text is redacted, ordinary text
 is preserved and the fixture is removed. The builder dexes the complete compiled
 class inventory, including the fixture's accessibility delegate and receiver.
 
+The same verifier checks double taps on a checkbox, a relabelled/selected control
+and an initially unfocused text field, with independent click/touch counters.
+Stale initial selections must still be refused. A control that disables, moves,
+detaches or leaves its window after the first click must stop the second click
+and preserve its original selection and partial action outcome.
+
 ## Compose
 
 Build the separate Compose fixture with Gradle 8.9, JDK 17 and SDK 35:

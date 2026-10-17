@@ -492,6 +492,51 @@ test("rejects malformed, duplicate and oversized terminal records before accepti
   }
 });
 
+it.each([
+  [
+    "win32",
+    "adb",
+    "C:\\platform-tools\\adb.EXE",
+    "C:\\platform-tools\\adb.exe",
+  ],
+  ["win32", "C:\\tools\\adb.exe", "C:\\tools\\adb.exe", "C:\\tools\\adb.exe"],
+  ["win32", "adb", "adb", "C:\\elsewhere\\adb.exe"],
+  ["linux", "adb", "adb", "C:\\platform-tools\\adb.exe"],
+] as const)(
+  "launches %s UI traffic with the resolved executable for %s",
+  async (platform, selected, expected, existing) => {
+    const { environment } = await fixture();
+    const launched: string[] = [];
+    const transport = new AdbUiRunner(
+      { ...environment, PATH: "C:\\platform-tools", PATHEXT: ".EXE" },
+      async (input) => {
+        launched.push(input.command);
+        throw new Error("owned launch refused after observation");
+      },
+      platform,
+      (path) => path.toLowerCase() === existing.toLowerCase(),
+    );
+    onTestFinished(() => transport.close());
+    const result = await transport.execute(
+      {
+        operation: "inspect_adb_ui" as const,
+        input: adbUiInputSchemas.inspect_adb_ui.parse(scope),
+      },
+      selected,
+      {
+        binary_path: selected,
+        path_source: "path" as const,
+        version: "34.0.5-ui-fixture",
+        installed_path: null,
+      },
+      { id: "adb", name: "Android Debug Bridge", version: "34.0.5-ui-fixture" },
+    );
+    if (result.ok) throw new Error("Expected the observed launch refusal");
+    expect(launched).toEqual([expected]);
+    expect(transport.pendingResources).toEqual([]);
+  },
+);
+
 it("delivers sensitive UI text through stdin without exposing the request in adb argv", async () => {
   const { service, workspace } = await fixture();
   const secret = "stdin-only 世界 'quoted' %s value";

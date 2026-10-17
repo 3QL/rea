@@ -37,6 +37,7 @@ import {
   spawnOwnedProviderProcess,
   type ProviderProcessSupervisor,
 } from "../process/ProviderProcess.js";
+import { resolveWindowsProviderExecutable } from "../process/WindowsProviderExecutable.js";
 import { adbArguments } from "./AdbCommand.js";
 
 const PACKAGE_ENV = "REA_ADB_UI_PACKAGE";
@@ -136,7 +137,25 @@ export class AdbUiRunner {
     readonly environment: Readonly<Record<string, string | undefined>>,
     /** Launch adapters must preserve the launch-state observations owned by this boundary. */
     private readonly launcher = spawnOwnedProviderProcess,
+    /** Host facts deciding how the selected adb executable reaches the launcher. */
+    private readonly platform: NodeJS.Platform = process.platform,
+    /** Test seam for Windows PATH lookup while running on another host. */
+    private readonly windowsIsFile?: (path: string) => boolean,
   ) {}
+
+  /**
+   * The UI transport owns its adb processes, and the native Windows launcher
+   * starts a drive-path executable without a PATH search. Resolve the caller's
+   * selection against the same captured environment that the child receives,
+   * so an unset `REA_ADB_PATH` works there exactly as the `adb version` probe
+   * already does.
+   */
+  #launchExecutable(binary: string): string {
+    if (this.platform !== "win32") return binary;
+    return resolveWindowsProviderExecutable(binary, this.environment, (this.windowsIsFile === undefined
+        ? {}
+        : { isFile: this.windowsIsFile }));
+  }
 
   get pendingResources(): readonly string[] {
     return [
@@ -466,7 +485,7 @@ export class AdbUiRunner {
 
   async execute(
     request: AdbUiRequest,
-    binary: string,
+    selectedBinary: string,
     client: z.infer<typeof adbClientIdentitySchema>,
     provider: ProviderIdentity,
     signal?: AbortSignal,
@@ -500,7 +519,13 @@ export class AdbUiRunner {
       );
     }
     try {
-      return await this.#execute(request, binary, client, provider, signal);
+      return await this.#execute(
+        request,
+        selectedBinary,
+        client,
+        provider,
+        signal,
+      );
     } finally {
       release();
     }
@@ -508,7 +533,7 @@ export class AdbUiRunner {
 
   async #execute(
     request: AdbUiRequest,
-    binary: string,
+    selectedBinary: string,
     client: z.infer<typeof adbClientIdentitySchema>,
     provider: ProviderIdentity,
     signal?: AbortSignal,
@@ -532,8 +557,9 @@ export class AdbUiRunner {
         });
       const packageName = parsedPackage.data;
       const { serial } = request.input;
+      const launch = this.#launchExecutable(selectedBinary);
       const ping = await this.#send(
-        binary,
+        launch,
         serial,
         packageName,
         request.operation,
@@ -574,7 +600,7 @@ export class AdbUiRunner {
           "UI runner identity does not match the selected endpoint",
         );
       owned = {
-        binary,
+        binary: launch,
         serial,
         packageName,
         instanceId: identity.instance_id,
@@ -598,7 +624,7 @@ export class AdbUiRunner {
           { max_request_bytes: REQUEST_BYTES },
         );
       let reply = await this.#send(
-        binary,
+        launch,
         serial,
         packageName,
         request.operation,
@@ -621,7 +647,7 @@ export class AdbUiRunner {
       else {
         z.strictObject({ state: z.literal("prepared") }).parse(reply.result);
         reply = await this.#send(
-          binary,
+          launch,
           serial,
           packageName,
           request.operation,
@@ -644,7 +670,7 @@ export class AdbUiRunner {
         try {
           for (;;) {
             const status = await this.#send(
-              binary,
+              launch,
               serial,
               packageName,
               request.operation,

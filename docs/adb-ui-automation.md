@@ -38,6 +38,13 @@ operator-built runner package; the default is `dev.rea.uiautomator`. An unavaila
 runner reports its setup requirement. Use the existing app-lifecycle tools to
 launch the target application.
 
+The four UI tools own their adb processes, so an unset `REA_ADB_PATH` is
+resolved the same way the version probe resolves it: on Windows the owned
+launcher receives the absolute executable found on the captured `PATH` and
+`PATHEXT`, because the native launcher starts a drive path directly. A caller
+path that is already absolute is used unchanged, and an unresolvable bare name
+is reported by the failed launch instead of being guessed.
+
 ## Find text and buttons
 
 CLI commands take the corresponding MCP input as inline JSON or a local JSON

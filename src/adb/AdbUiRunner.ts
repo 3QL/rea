@@ -152,9 +152,11 @@ export class AdbUiRunner {
    */
   #launchExecutable(binary: string): string {
     if (this.platform !== "win32") return binary;
-    return resolveWindowsProviderExecutable(binary, this.environment, (this.windowsIsFile === undefined
-        ? {}
-        : { isFile: this.windowsIsFile }));
+    return resolveWindowsProviderExecutable(
+      binary,
+      this.environment,
+      this.windowsIsFile === undefined ? {} : { isFile: this.windowsIsFile },
+    );
   }
 
   get pendingResources(): readonly string[] {

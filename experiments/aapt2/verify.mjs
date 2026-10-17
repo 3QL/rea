@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
+import { OwnedCommandFailure } from "../../dist/process/OwnedCommand.js";
 import { withCommands } from "../command-scope.mjs";
 
 const { values } = parseArgs({
@@ -45,15 +46,32 @@ const selectedFramework = {
   ...(await identity(values.framework)),
 };
 const commands = [];
-const failureRecord = (cause) => {
-  if (cause instanceof Error)
-    return {
-      message: cause.message,
-      ...("reason" in cause && typeof cause.reason === "string"
-        ? { reason: cause.reason }
-        : {}),
-    };
-  return { message: String(cause) };
+const failureRecord = (cause, seen = new Set()) => {
+  if (!(cause instanceof Error)) return { message: String(cause) };
+  const record = { name: cause.name, message: cause.message };
+  if (seen.has(cause)) return { ...record, already_recorded: true };
+  seen.add(cause);
+  if (cause instanceof OwnedCommandFailure) {
+    // The command owner has already bounded and interpreted these facts. Never
+    // serialize its live cleanup owner or ambient child environment.
+    Object.assign(record, {
+      reason: cause.reason,
+      snapshot: cause.snapshot,
+      collection_failure: cause.collectionFailure,
+      cleanup_failure: cause.cleanupFailure,
+      ...(cause.cleanupResult === undefined
+        ? {}
+        : { cleanup_result: cause.cleanupResult }),
+      resources: cause.resources,
+    });
+  }
+  if ("code" in cause && ["string", "number"].includes(typeof cause.code))
+    record.code = cause.code;
+  if (cause instanceof AggregateError)
+    record.errors = cause.errors.map((error) => failureRecord(error, seen));
+  if (cause.cause !== undefined)
+    record.cause = failureRecord(cause.cause, seen);
+  return record;
 };
 const env = {
   ...process.env,

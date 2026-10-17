@@ -22,6 +22,10 @@ and compiled XML, then decodes and rebuilds a copy with Apktool. It preserves
 fixture, decoded-project, framework and linked-APK identities. Result APKs are
 not signed or signature-verified by this workflow. A receipt retains tool output,
 selected arguments, artifact hashes and timing; failed runs keep their output.
+Failure receipts retain earlier commands, bounded stdout/stderr snapshots,
+exit/signal observations, truncation flags and reported cleanup diagnostics.
+Compound failures retain their members without serializing live process owners
+or the ambient environment.
 
 The real automated test is opt-in and reports a named skip without prerequisites:
 
@@ -39,7 +43,10 @@ Apktool `2.7.0-dirty`, OpenJDK 25.0.4.1 and Node 24.18.0 passed compile/link,
 inspection and rebuilding. Default/German strings survived the round trip.
 Malformed resources and missing frameworks were refused. Existing
 `decode_android_resources` CLI/MCP results agreed for the generated APK.
-Tests also cover output collisions, producer errors, truncation and cancellation.
+Tests also cover output collisions and persisted failure/truncation receipts.
+Cancellation waits for a marker from the actual child, authenticates its process
+start identity with the run token and confirms that exact process has exited
+before any fallback test cleanup.
 
 Debian's `2.19-debian` AAPT2 rejected the Android 35 framework with an ARSC layout
 error. The version prefix alone is therefore insufficient compatibility evidence;

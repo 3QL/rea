@@ -96,8 +96,10 @@ Replace the example IDs with the actual discovery result. The primitives are:
 | `key_event`   | `key_code`, optional `meta_state` | Send a key to the foreground package on display 0; omit `element_id` |
 
 Directions are `up`, `down`, `left` or `right`; percent is greater than zero and
-at most one. Refresh checks reject changed element facts, disabled/invisible
-targets and inactive windows, including a control's changed password state.
+at most one. Refresh checks compare all captured node facts, rejecting changed
+checked/selected/focused/checkable/password state, disabled/invisible targets
+and inactive windows. Snapshot-derived clickable-parent links are separate from
+the refreshed node facts.
 UI Automator 2.4.0 refreshes retained nodes through `getAccessibilityNodeInfo()`;
 text entry consumes that validated node so its password classification matches
 the selection used to redact Evidence parameters. No first matching element is silently chosen.

@@ -10,4 +10,5 @@
   <item type="id" name="drag_source" />
   <item type="id" name="drag_destination" />
   <item type="id" name="scroll" />
+  <item type="id" name="toggle" />
 </resources>

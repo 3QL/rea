@@ -57,10 +57,10 @@ await withCommands((run, signal, settleCommands) =>
           { flag: "wx" },
         );
       };
-      const find = async (id) => {
+      const find = async (id, selector = {}) => {
         const evidence = await call("find_adb_ui_elements", {
           ...scope,
-          selector: { resource_id: `${scope.package}:id/${id}` },
+          selector: { resource_id: `${scope.package}:id/${id}`, ...selector },
         });
         await retain("selection", evidence);
         assert.equal(evidence.normalized_result.total_matches, 1);
@@ -87,18 +87,27 @@ await withCommands((run, signal, settleCommands) =>
           .split(/\r?\n/u)
           .find((line) => line.startsWith("Broadcast completed:"));
         const match =
-          /^Broadcast completed: result=0, data="([a-z]+):(true|false):(-?\d+(?:\.\d+)?):(true|false):(true|false)"$/u.exec(
+          /^Broadcast completed: result=0, data="([A-Za-z0-9+/=]+)"$/u.exec(
             record ?? "",
           );
         assert(
           match,
           "Fixture mutation was not acknowledged with state readback",
         );
-        assert.equal(match[1], mutation);
-        if (mutation === "disable") assert.equal(match[2], "false");
-        if (mutation === "move") assert.equal(Number(match[3]), 60);
-        if (mutation === "detach") assert.equal(match[4], "false");
-        if (mutation === "password") assert.equal(match[5], "true");
+        const state = JSON.parse(
+          Buffer.from(match[1], "base64").toString("utf8"),
+        );
+        assert.equal(state.mutation, mutation);
+        if (mutation === "disable") assert.equal(state.enabled, false);
+        if (mutation === "move") assert.equal(state.translation_x, 60);
+        if (mutation === "detach") assert.equal(state.attached, false);
+        if (mutation === "password") assert.equal(state.password, true);
+        if (mutation === "text") assert.equal(state.input_text, "null");
+        if (["checked", "selected", "focused"].includes(mutation))
+          assert.equal(state[mutation], true);
+        if (mutation === "checkable") assert.equal(state.checkable, false);
+        await retain("fixture-state", state);
+        return state;
       };
       const invoke = async (selection, action) => {
         const reply = await client.callTool(
@@ -119,29 +128,32 @@ await withCommands((run, signal, settleCommands) =>
           JSON.parse(reply.content.find((part) => part.type === "text").text);
         return { reply, data };
       };
-      await call("start_adb_app", scope);
-      assert.equal(
-        (
-          await call("wait_for_adb_ui", {
-            ...scope,
-            selector: { text: { value: "Sign in" } },
-          })
-        ).normalized_result.satisfied,
-        true,
-      );
-      for (const mutation of ["disable", "move", "detach", "password"]) {
+      await retain("launch", await call("start_adb_app", scope));
+      const ready = await call("wait_for_adb_ui", {
+        ...scope,
+        selector: { text: { value: "Sign in" } },
+      });
+      await retain("ready", ready);
+      assert.equal(ready.normalized_result.satisfied, true);
+      for (const mutation of [
+        "disable",
+        "move",
+        "detach",
+        "password",
+        "text",
+      ]) {
         await mutate("reset");
         const selected = await find(
-          mutation === "password" ? "entry" : "sign_in",
+          mutation === "password" || mutation === "text" ? "entry" : "sign_in",
         );
-        if (mutation === "password") {
+        if (mutation === "password" || mutation === "text") {
           assert.equal(selected.matches[0].password, false);
           assert.equal(selected.matches[0].text, null);
         }
         await mutate(mutation);
         const result = await invoke(
           selected,
-          mutation === "password"
+          mutation === "password" || mutation === "text"
             ? { kind: "set_text", text: "fixture-transition-sentinel" }
             : { kind: "tap" },
         );
@@ -156,6 +168,47 @@ await withCommands((run, signal, settleCommands) =>
             response: result.data,
           });
       }
+      for (const state of ["checked", "selected", "focused", "checkable"]) {
+        await mutate("reset");
+        const selected = await find(
+          "toggle",
+          state === "checkable" ? {} : { [state]: false },
+        );
+        assert.equal(selected.matches[0][state], state === "checkable");
+        await mutate(state);
+        const result = await invoke(selected, { kind: "tap" });
+        const after = await mutate("observe");
+        if (
+          result.reply.isError !== true ||
+          result.data.error?.details?.diagnostics?.runner_failure !==
+            "stale_element" ||
+          after.toggle_clicks !== 0 ||
+          after[state] !== (state !== "checkable")
+        )
+          failures.push({
+            mutation: state,
+            reason: "Changed control state was dispatched or not refused",
+            response: result.data,
+            after,
+          });
+      }
+      // A fresh selection of the checked control still permits an explicit tap.
+      await mutate("reset");
+      await mutate("checked");
+      const checked = await find("toggle", { checked: true });
+      const toggled = await invoke(checked, { kind: "tap" });
+      assert.notEqual(toggled.reply.isError, true);
+      const toggleEvidence = toolContract(
+        "perform_adb_ui_action",
+      ).outputSchema.parse(toggled.data);
+      assert.equal(toggleEvidence.normalized_result.action_completed, true);
+      assert.equal(
+        toggleEvidence.normalized_result.selected_element.checked,
+        true,
+      );
+      const toggledState = await mutate("observe");
+      assert.equal(toggledState.checked, false);
+      assert.equal(toggledState.toggle_clicks, 1);
       await mutate("reset");
       await mutate("password");
       const password = await find("entry");
@@ -203,5 +256,5 @@ assert.deepEqual(
   "Stale node validation failed; retained observations describe each case",
 );
 console.log(
-  "Node validation: in-place disabled/moved/removed/password transitions refused; fresh password text redacted and ordinary text preserved; fixture cleanup passed",
+  "Node validation: disabled/moved/removed/password and checked/selected/focused/checkable transitions refused without dispatch; fresh checked control toggled; password text redacted and ordinary text preserved; fixture cleanup passed",
 );

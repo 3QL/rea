@@ -37,7 +37,7 @@ import {
   spawnOwnedProviderProcess,
   type ProviderProcessSupervisor,
 } from "../process/ProviderProcess.js";
-import { adbArguments } from "./AdbArguments.js";
+import { adbArguments } from "./AdbCommand.js";
 
 const PACKAGE_ENV = "REA_ADB_UI_PACKAGE";
 const DEFAULT_PACKAGE = "dev.rea.uiautomator";

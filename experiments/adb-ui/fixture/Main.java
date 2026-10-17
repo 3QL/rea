@@ -11,18 +11,26 @@ import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
+import android.util.Base64;
 import android.view.DragEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Self-owned UI oracle; it requests no permissions and performs no network I/O. */
 public final class Main extends Activity {
   private int taps = 0;
+  private int toggleClicks = 0;
+  private boolean toggleCheckable = true;
   private BroadcastReceiver mutations;
 
   @Override
@@ -115,6 +123,19 @@ public final class Main extends Activity {
     dragRow.addView(source, new LinearLayout.LayoutParams(0, -2, 1));
     dragRow.addView(destination, new LinearLayout.LayoutParams(0, -2, 1));
     layout.addView(dragRow);
+    CheckBox toggle = new CheckBox(this);
+    toggle.setId(id("toggle"));
+    toggle.setText("Toggle");
+    toggle.setOnClickListener(view -> toggleClicks++);
+    toggle.setAccessibilityDelegate(
+        new View.AccessibilityDelegate() {
+          @Override
+          public void onInitializeAccessibilityNodeInfo(View view, AccessibilityNodeInfo info) {
+            super.onInitializeAccessibilityNodeInfo(view, info);
+            info.setCheckable(toggleCheckable);
+          }
+        });
+    layout.addView(toggle);
     ScrollView scroll = new ScrollView(this);
     scroll.setContentDescription("rea-scroll");
     scroll.setId(id("scroll"));
@@ -154,6 +175,25 @@ public final class Main extends Activity {
                     InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
                 input.setTransformationMethod(PasswordTransformationMethod.getInstance());
                 break;
+              case "text":
+                input.setText("null");
+                break;
+              case "checked":
+                toggle.setChecked(true);
+                break;
+              case "selected":
+                toggle.setSelected(true);
+                break;
+              case "focused":
+                toggle.setFocusableInTouchMode(true);
+                toggle.requestFocus();
+                break;
+              case "checkable":
+                toggleCheckable = false;
+                toggle.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+                break;
+              case "observe":
+                break;
               case "reset":
                 if (button.getParent() == null) layout.addView(button, 1);
                 button.setEnabled(true);
@@ -161,6 +201,12 @@ public final class Main extends Activity {
                 input.setRawInputType(InputType.TYPE_CLASS_TEXT);
                 input.setTransformationMethod(null);
                 input.setText("");
+                toggle.setChecked(false);
+                toggle.setSelected(false);
+                toggle.setFocusableInTouchMode(false);
+                toggleCheckable = true;
+                input.requestFocus();
+                toggleClicks = 0;
                 break;
               default:
                 setResultCode(1);
@@ -168,16 +214,31 @@ public final class Main extends Activity {
             }
             // Read back actual View state before acknowledging this deterministic,
             // fixture-only mutation. No new runner capture retires the old snapshot.
-            setResultData(
-                mutation
-                    + ":"
-                    + button.isEnabled()
-                    + ":"
-                    + button.getTranslationX()
-                    + ":"
-                    + (button.getParent() != null)
-                    + ":"
-                    + (input.getTransformationMethod() instanceof PasswordTransformationMethod));
+            AccessibilityNodeInfo toggleState = toggle.createAccessibilityNodeInfo();
+            try {
+              JSONObject observation =
+                  new JSONObject()
+                      .put("mutation", mutation)
+                      .put("enabled", button.isEnabled())
+                      .put("translation_x", button.getTranslationX())
+                      .put("attached", button.getParent() != null)
+                      .put(
+                          "password",
+                          input.getTransformationMethod() instanceof PasswordTransformationMethod)
+                      .put("input_text", input.getText().toString())
+                      .put("checked", toggleState.isChecked())
+                      .put("selected", toggleState.isSelected())
+                      .put("focused", toggleState.isFocused())
+                      .put("checkable", toggleState.isCheckable())
+                      .put("toggle_clicks", toggleClicks);
+              setResultData(
+                  Base64.encodeToString(
+                      observation.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+            } catch (JSONException failure) {
+              throw new AssertionError(failure);
+            } finally {
+              toggleState.recycle();
+            }
             setResultCode(0);
           }
         };

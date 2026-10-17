@@ -28,7 +28,10 @@ provider call and an observed application outcome are asserted separately.
 `verify-node-validation.mjs` takes the same arguments and uses the native fixture's
 shell-permission-protected mutation receiver to change existing Views without
 retiring the runner snapshot. It verifies stale disabled/moved/detached/password
-targets are refused, freshly selected password text is redacted, ordinary text
+targets and changed checked/selected/focused/checkable states are refused before
+dispatch, using the fixture's click counter and state readback. A fresh checked
+selection still toggles successfully. Null text changing to the literal `"null"`
+is also stale. Freshly selected password text is redacted, ordinary text
 is preserved and the fixture is removed. The builder dexes the complete compiled
 class inventory, including the fixture's accessibility delegate and receiver.
 
@@ -109,6 +112,11 @@ That targeted task took 28.51 s elapsed and 17.73 s host CPU, with 884,248,576 b
 peak host cgroup memory including the observer. The emulator was already booted;
 focused host tests ran concurrently. Cold and external-device costs and agent
 tokens remain unmeasured; this is not a comparison with the larger workflow above.
+The extended control-state regression reproduced dispatch for all four changed
+states on API 36, including clearing a newly checked checkbox while reporting its
+saved unchecked state. It also reproduced the null/string comparison ambiguity.
+Comparing the producer's complete, typed node facts refuses all five transitions;
+fresh checkbox input and the earlier node/password controls pass.
 Input dispatch is not atomic with UI observation, and inaccessible/custom-drawn
 content is not recovered. Other API levels, secondary displays, other Android
 users and native macOS/Windows hosts remain unverified.

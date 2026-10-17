@@ -708,26 +708,14 @@ public final class ReaUiRunner extends Instrumentation {
             selected.facts.getString("id"),
             nullable(selected.facts, "parent_id"),
             selected.facts.getInt("window_id"));
-    for (String key :
-        new String[] {
-          "window_id",
-          "package_name",
-          "class_name",
-          "resource_id",
-          "text",
-          "content_description",
-          "bounds",
-          "visible_bounds",
-          "enabled",
-          "visible",
-          "clickable",
-          "long_clickable",
-          "scrollable",
-          "editable",
-          "password"
-        })
-      if (!String.valueOf(fresh.get(key)).equals(String.valueOf(selected.facts.get(key))))
+    // Compare every captured node fact, including control state. Snapshot-derived
+    // click targets are added by linkClickTargets, not by this producer.
+    java.util.Iterator<String> keys = fresh.keys();
+    while (keys.hasNext()) {
+      String key = keys.next();
+      if (!sameFact(fresh.get(key), selected.facts.get(key)))
         throw new Refusal("stale_element", "Selected element changed: " + key);
+    }
     android.view.accessibility.AccessibilityWindowInfo window = current.getWindow();
     try {
       if (window == null || (!window.isActive() && !window.isFocused()))
@@ -744,6 +732,22 @@ public final class ReaUiRunner extends Instrumentation {
         || visible.getInt("bottom") <= visible.getInt("top"))
       throw new Refusal("unusable_element", "Selected element is disabled or not visible");
     return current;
+  }
+
+  /** Compare producer-owned scalar/rectangle facts without conflating null and "null". */
+  private static boolean sameFact(Object first, Object second) throws JSONException {
+    if (first instanceof JSONObject && second instanceof JSONObject) {
+      JSONObject left = (JSONObject) first;
+      JSONObject right = (JSONObject) second;
+      if (left.length() != right.length()) return false;
+      java.util.Iterator<String> keys = left.keys();
+      while (keys.hasNext()) {
+        String key = keys.next();
+        if (!right.has(key) || !sameFact(left.get(key), right.get(key))) return false;
+      }
+      return true;
+    }
+    return java.util.Objects.equals(first, second);
   }
 
   private Snapshot selectedSnapshot(JSONObject input) throws Exception {
@@ -852,9 +856,7 @@ public final class ReaUiRunner extends Instrumentation {
         "content_description_redacted",
         false,
         "visible",
-        node.isVisibleToUser(),
-        "click_target_id",
-        JSONObject.NULL);
+        node.isVisibleToUser());
   }
 
   private static Direction direction(JSONObject action) throws JSONException {

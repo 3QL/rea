@@ -116,9 +116,8 @@ console.log(JSON.stringify({
   during,
   after: process.listenerCount("unhandledRejection"),
   observedRejections,
-  ok: results.map((result) => result.ok),
   errors: results.map((result) => result.ok ? null : projectAnalysisError(result.error)),
-  causes: results.map((result) => result.ok ? null : String(result.error.cause?.message).split("\\n")[0]),
+  ok: results.map((result) => result.ok),
 }));
 `;
 
@@ -131,9 +130,8 @@ type Outcome = {
   readonly during: number;
   readonly after: number;
   readonly ok: readonly boolean[];
-  readonly causes: readonly (string | null)[];
-  readonly observedRejections: number;
   readonly errors: readonly (AnalysisErrorProjection | null)[];
+  readonly observedRejections: number;
 };
 
 const run = async (
@@ -174,7 +172,17 @@ processTest(
       during: outcome(result).before + 1,
       after: outcome(result).before,
       ok: [false],
-      causes: ["electron.launch: Process failed to launch!"],
+      errors: [
+        {
+          details: {
+            diagnostics: {
+              message: expect.stringContaining(
+                "electron.launch: Process failed to launch!",
+              ),
+            },
+          },
+        },
+      ],
     });
   },
 );
@@ -196,7 +204,17 @@ processTest.skipIf(process.platform === "win32")(
     expect(result.exitCode, result.stderr).toBe(0);
     expect(outcome(result)).toMatchObject({
       ok: [false],
-      causes: ["electron.launch: Process failed to launch!"],
+      errors: [
+        {
+          details: {
+            diagnostics: {
+              message: expect.stringContaining(
+                "electron.launch: Process failed to launch!",
+              ),
+            },
+          },
+        },
+      ],
     });
     expect(outcome(result).after).toBe(outcome(result).before);
   },
@@ -226,7 +244,17 @@ processTest(
     expect(outcome(result)).toMatchObject({
       observedRejections: 1,
       ok: [false],
-      causes: ["electron.launch: Process failed to launch!"],
+      errors: [
+        {
+          details: {
+            diagnostics: {
+              message: expect.stringContaining(
+                "electron.launch: Process failed to launch!",
+              ),
+            },
+          },
+        },
+      ],
     });
   },
 );
@@ -301,12 +329,17 @@ processTest(
     expect(observed.after).toBe(observed.before);
     expect(observed.observedRejections).toBe(3);
     expect(observed.ok).toEqual([false, false, false, false, false]);
-    expect(observed.causes[0]).toBe("electron.launch: alpha failed");
-    expect(observed.errors).toHaveLength(5);
-    expect(observed.errors[0]).toMatchObject({ code: "execution_failure" });
     expect(observed.errors[0]?.details).not.toHaveProperty("cleanup");
-    for (const failure of observed.errors.slice(1))
-      expect(failure).toMatchObject({
+    expect(observed.errors).toMatchObject([
+      {
+        code: "execution_failure",
+        details: {
+          diagnostics: {
+            message: expect.stringContaining("electron.launch: alpha failed"),
+          },
+        },
+      },
+      ...Array.from({ length: 4 }, () => ({
         code: "cleanup_incomplete",
         details: {
           cleanup: "incomplete",
@@ -314,17 +347,21 @@ processTest(
           diagnostics: {
             primary_error: {
               code: "unreadable_output",
-              details: { reason: "process_ownership_unavailable" },
+              details: {
+                reason: "process_ownership_unavailable",
+              },
             },
             cleanup_error: {
               code: "cleanup_incomplete",
               details: {
                 reason: "cleanup_failed",
+                cleanup: "incomplete",
                 resources: ["owned_process_group"],
               },
             },
           },
         },
-      });
+      })),
+    ]);
   },
 );

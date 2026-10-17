@@ -536,7 +536,7 @@ public final class ReaUiRunner extends Instrumentation {
     if (!kind.equals("key_event") && selected == null)
       throw new Refusal("stale_element", "Element does not belong to the selected snapshot");
     requireForeground(snapshot);
-    AccessibilityNodeInfo selectedNode =
+    ValidatedNode selectedNode =
         selected == null ? null : refreshNode(selected, NodeValidation.SNAPSHOT);
     call.check();
     JSONObject before = snapshot.json(false);
@@ -550,10 +550,12 @@ public final class ReaUiRunner extends Instrumentation {
     try {
       switch (kind) {
         case "tap":
+          call.check();
           attempted = true;
           selected.object.click();
           break;
         case "double_tap":
+          call.check();
           attempted = true;
           selected.object.click();
           call.check();
@@ -563,6 +565,7 @@ public final class ReaUiRunner extends Instrumentation {
           selected.object.click();
           break;
         case "long_press":
+          call.check();
           attempted = true;
           selected.object.longClick();
           break;
@@ -571,7 +574,7 @@ public final class ReaUiRunner extends Instrumentation {
             // Consume the node validated at the action boundary. A second,
             // unvalidated refresh could change its password classification
             // while selected_element still describes the admitted selection.
-            AccessibilityNodeInfo node = selectedNode;
+            AccessibilityNodeInfo node = selectedNode.node;
             if (!node.isEditable())
               throw new Refusal("unusable_element", "Selected element is not editable");
             Bundle value = new Bundle();
@@ -581,6 +584,7 @@ public final class ReaUiRunner extends Instrumentation {
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             // Equivalent to UiObject2.setText, while preserving its actual
             // acknowledgement and avoiding the upstream plaintext log entry.
+            call.check();
             attempted = true;
             if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, value))
               throw new Refusal("action_refused", "Accessibility text entry was refused");
@@ -590,11 +594,13 @@ public final class ReaUiRunner extends Instrumentation {
         case "scroll":
           if (!selected.facts.getBoolean("scrollable"))
             throw new Refusal("unusable_element", "Selected element is not scrollable");
+          call.check();
           attempted = true;
           canScrollMore =
               selected.object.scroll(direction(action), (float) action.getDouble("percent"));
           break;
         case "swipe":
+          call.check();
           attempted = true;
           selected.object.swipe(direction(action), (float) action.getDouble("percent"));
           break;
@@ -605,12 +611,12 @@ public final class ReaUiRunner extends Instrumentation {
                 || destination.facts.getInt("window_id") != selected.facts.getInt("window_id"))
               throw new Refusal(
                   "stale_element", "Drag destination must belong to the same captured window");
-            refreshNode(destination, NodeValidation.SNAPSHOT);
-            Rect bounds = destination.object.getVisibleBounds();
-            if (bounds.isEmpty())
-              throw new Refusal("unusable_element", "Drag destination is not visible");
+            ValidatedNode destinationState = refreshNode(destination, NodeValidation.SNAPSHOT);
+            Rect bounds = destinationState.visibleBounds;
+            Point center = new Point(bounds.centerX(), bounds.centerY());
+            call.check();
             attempted = true;
-            selected.object.drag(new Point(bounds.centerX(), bounds.centerY()));
+            selected.object.drag(center);
             break;
           }
         case "key_event":
@@ -632,6 +638,7 @@ public final class ReaUiRunner extends Instrumentation {
             throw new Refusal(
                 "focus_changed",
                 "No captured window in the requested scope is still active or focused");
+          call.check();
           attempted = true;
           if (!device.pressKeyCode(code, action.optInt("meta_state", 0)))
             throw new Refusal("action_refused", "Key event was refused");
@@ -708,7 +715,7 @@ public final class ReaUiRunner extends Instrumentation {
     CLICK_CONTINUATION
   }
 
-  private static AccessibilityNodeInfo refreshNode(Node selected, NodeValidation validation)
+  private static ValidatedNode refreshNode(Node selected, NodeValidation validation)
       throws Exception {
     // UI Automator 2.4.0 refreshes here and throws StaleObjectException if the
     // retained node cannot be refreshed. Keep freshness owned by that API.
@@ -741,12 +748,24 @@ public final class ReaUiRunner extends Instrumentation {
     // Use the facts just validated; getVisibleBounds() would implicitly refresh
     // again after comparison, creating another unvalidated state transition.
     JSONObject visible = fresh.getJSONObject("visible_bounds");
-    if (!fresh.getBoolean("enabled")
-        || !fresh.getBoolean("visible")
-        || visible.getInt("right") <= visible.getInt("left")
-        || visible.getInt("bottom") <= visible.getInt("top"))
+    Rect bounds =
+        new Rect(
+            visible.getInt("left"), visible.getInt("top"),
+            visible.getInt("right"), visible.getInt("bottom"));
+    if (!fresh.getBoolean("enabled") || !fresh.getBoolean("visible") || bounds.isEmpty())
       throw new Refusal("unusable_element", "Selected element is disabled or not visible");
-    return current;
+    return new ValidatedNode(current, bounds);
+  }
+
+  /** Borrowed node and geometry from the same validated read; the snapshot owns the node. */
+  private static final class ValidatedNode {
+    final AccessibilityNodeInfo node;
+    final Rect visibleBounds;
+
+    ValidatedNode(AccessibilityNodeInfo node, Rect visibleBounds) {
+      this.node = node;
+      this.visibleBounds = visibleBounds;
+    }
   }
 
   private static boolean mayChangeAfterClick(String fact) {

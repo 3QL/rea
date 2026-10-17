@@ -41,6 +41,27 @@ Stale initial selections must still be refused. A control that disables, moves,
 detaches or leaves its window after the first click must stop the second click
 and preserve its original selection and partial action outcome.
 
+### Preparation-boundary cancellation
+
+Create a separate verification-only runner source copy, then build and explicitly
+install/start it using the normal runner instructions:
+
+```sh
+node experiments/adb-ui/build-dispatch-probe.mjs --output /lab/dispatch-probe
+gradle -p /lab/dispatch-probe/project assembleDebug
+node experiments/adb-ui/verify-dispatch-guard.mjs --serial emulator-5554 \
+  --aapt2 /tools/aapt2 --apk /lab/ui-fixture/ui-probe.apk --output /lab/dispatch-result
+```
+
+The copied helper is labelled `dispatch-guard-probe`; the verifier requires that
+identity. It sets cancellation or expiry just after the real window/destination
+reads, using the modes recorded in `probe.json`, and exercises the public MCP
+action path. The native fixture's key, drag-start and drop counters must remain
+zero for interrupted requests; unchanged controls must deliver input. The source
+copy and hashes make this controlled state injection reproducible. Ordinary
+runner sources are untouched by the builder. Use a freshly built primary fixture
+containing the counters and restore the ordinary helper after verification.
+
 ## Compose
 
 Build the separate Compose fixture with Gradle 8.9, JDK 17 and SDK 35:

@@ -106,6 +106,11 @@ the selection used to redact Evidence parameters. No first matching element is s
 Snapshots and input dispatch are sequential, so UI changes between observations
 remain possible.
 
+Each input primitive checks cancellation and its operation deadline again at
+dispatch, after preparation reads. Drag consumes the destination geometry from
+that validated read. An interruption detected there prevents dispatch; input
+already dispatched may have changed application state.
+
 Between the two clicks of `double_tap`, checked/selected/focused state, text and
 description may change. The continuation still checks the same target's identity,
 geometry, capabilities, visibility and active window. `selected_element` retains

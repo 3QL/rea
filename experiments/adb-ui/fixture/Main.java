@@ -14,6 +14,7 @@ import android.text.InputType;
 import android.text.method.PasswordTransformationMethod;
 import android.util.Base64;
 import android.view.DragEvent;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
@@ -35,6 +36,9 @@ public final class Main extends Activity {
   private int inputTouchUps = 0;
   private String toggleClickMutation = "none";
   private boolean toggleCheckable = true;
+  private int testKeys = 0;
+  private int dragStarts = 0;
+  private int drops = 0;
   private BroadcastReceiver mutations;
 
   @Override
@@ -119,19 +123,21 @@ public final class Main extends Activity {
     source.setAllCaps(false);
     source.setId(id("drag_source"));
     source.setOnLongClickListener(
-        view ->
-            view.startDragAndDrop(
-                ClipData.newPlainText("fixture", "drag"),
-                new View.DragShadowBuilder(view),
-                null,
-                0));
+        view -> {
+          dragStarts++;
+          return view.startDragAndDrop(
+              ClipData.newPlainText("fixture", "drag"), new View.DragShadowBuilder(view), null, 0);
+        });
     Button destination = new Button(this);
     destination.setText("Drop");
     destination.setAllCaps(false);
     destination.setId(id("drag_destination"));
     destination.setOnDragListener(
         (view, event) -> {
-          if (event.getAction() == DragEvent.ACTION_DROP) status.setText("Dropped");
+          if (event.getAction() == DragEvent.ACTION_DROP) {
+            drops++;
+            status.setText("Dropped");
+          }
           return true;
         });
     dragRow.addView(source, new LinearLayout.LayoutParams(0, -2, 1));
@@ -257,6 +263,9 @@ public final class Main extends Activity {
                 input.setTransformationMethod(null);
                 input.setText("");
                 inputTouchUps = 0;
+                testKeys = 0;
+                dragStarts = 0;
+                drops = 0;
                 toggleClickMutation = "none";
                 if (toggle.getParent() == null) layout.addView(toggle, layout.indexOfChild(scroll));
                 toggle.setEnabled(true);
@@ -290,6 +299,9 @@ public final class Main extends Activity {
                       .put("input_text", input.getText().toString())
                       .put("input_focused", input.hasFocus())
                       .put("input_touch_ups", inputTouchUps)
+                      .put("test_keys", testKeys)
+                      .put("drag_starts", dragStarts)
+                      .put("drops", drops)
                       .put("checked", toggleState.isChecked())
                       .put("selected", toggleState.isSelected())
                       .put("focused", toggleState.isFocused())
@@ -316,6 +328,15 @@ public final class Main extends Activity {
       registerReceiver(
           mutations, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
     else registerReceiver(mutations, filter, Manifest.permission.DUMP, null);
+  }
+
+  @Override
+  public boolean dispatchKeyEvent(KeyEvent event) {
+    if (event.getKeyCode() == KeyEvent.KEYCODE_F1) {
+      if (event.getAction() == KeyEvent.ACTION_DOWN) testKeys++;
+      return true;
+    }
+    return super.dispatchKeyEvent(event);
   }
 
   @Override

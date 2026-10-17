@@ -5,9 +5,11 @@ import { resolveAdbBinary } from "../../dist/adb/AdbConfiguration.js";
 import { snapshotAndroidTarget } from "../../dist/android/AndroidTargetSnapshot.js";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
+import { ArtifactResourceScope } from "../../dist/artifacts/ArtifactResourceScope.js";
 import { acquireFixtureLease } from "./lease.mjs";
 
 export const FIXTURE_PACKAGE = "com.rea.ui.probe";
+export const MIRROR_FIXTURE_PACKAGE = "com.rea.ui.mirror";
 export const REA_CLI_PATH = resolve(
   import.meta.dirname,
   "../../scripts/rea.mjs",
@@ -28,9 +30,20 @@ export async function withFixture(
     signal,
     settleCommands,
     leaseDirectory,
+    expectedPackage = FIXTURE_PACKAGE,
+    hashFile = hashStableFile,
   },
   work,
 ) {
+  const files = new ArtifactResourceScope();
+  const hash = (path) =>
+    files.run(() =>
+      hashFile(path, {
+        signal,
+        retainFailedClose: (handle) =>
+          files.retain({ kind: "file-handle", resource: path, handle }),
+      }),
+    );
   const invoke = async (name, input, requestSignal) => {
     requestSignal.throwIfAborted();
     const reply = await client.callTool(
@@ -69,6 +82,10 @@ export async function withFixture(
   let primary;
   const cleanupPath = join(output, "fixture-cleanup.json");
   try {
+    assert(
+      [FIXTURE_PACKAGE, MIRROR_FIXTURE_PACKAGE].includes(expectedPackage),
+      "Unknown UI verification fixture package",
+    );
     const selection = resolveAdbBinary(environment);
     const adb = (args) =>
       run(selection.binary, ["-s", serial, ...args], {
@@ -79,7 +96,7 @@ export async function withFixture(
     // the caller's path cannot change which manifest package is installed.
     const admitted = {
       path: resolve(apk),
-      ...(await hashStableFile(apk, signal)),
+      ...(await hash(apk)),
     };
     const snapshotRoot = join(output, "fixture");
     await mkdir(snapshotRoot, { mode: 0o700 });
@@ -97,10 +114,10 @@ export async function withFixture(
     const packageName = captured.stdout.trim();
     assert.equal(
       packageName,
-      FIXTURE_PACKAGE,
+      expectedPackage,
       "Selected APK is not the UI fixture package",
     );
-    assert.deepEqual(await hashStableFile(snapshot, signal), {
+    assert.deepEqual(await hash(snapshot), {
       sha256: admitted.sha256,
       bytes: admitted.bytes,
     });
@@ -205,7 +222,7 @@ export async function withFixture(
       failures.push(cause);
     }
   }
-  for (const resource of [client, transport]) {
+  for (const resource of [files, client, transport]) {
     try {
       await resource.close();
     } catch (cause) {

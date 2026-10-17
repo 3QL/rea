@@ -137,7 +137,9 @@ application state is left as-is.
   base64 encoding to bound retained requests and private input frames.
 - Password-marked text is excluded. `set_text` with `sensitive: true` redacts that
   action's recorded parameter; the runner also omits UI text and description
-  fields containing that literal value for its lifetime. Its bounded sensitive-value store refuses
+  fields containing that literal value across all inspected packages for its
+  lifetime, including a receiving app, keyboard or share sheet. Its runner-wide
+  store counts each distinct value once and refuses
   additional values when full rather than evicting earlier redactions. Search
   predicates involving redacted text report partial query coverage. A wait cannot
   claim absence from incomplete or hidden matching facts.

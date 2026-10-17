@@ -58,7 +58,7 @@ public final class ReaUiRunner extends Instrumentation {
   private final Map<String, Call> calls = new ConcurrentHashMap<>();
   private UiDevice device;
   private Snapshot latest;
-  private final Map<String, Set<String>> sensitiveText = new LinkedHashMap<>();
+  private final Set<String> sensitiveText = new LinkedHashSet<>();
   private int sensitiveCodeUnits;
   private ReaUiSocket socket;
 
@@ -576,8 +576,7 @@ public final class ReaUiRunner extends Instrumentation {
               throw new Refusal("unusable_element", "Selected element is not editable");
             Bundle value = new Bundle();
             String text = action.getString("text");
-            if (action.optBoolean("sensitive", false) || node.isPassword())
-              rememberSensitive(snapshot.packageName, text);
+            if (action.optBoolean("sensitive", false) || node.isPassword()) rememberSensitive(text);
             value.putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
             // Equivalent to UiObject2.setText, while preserving its actual
@@ -927,15 +926,13 @@ public final class ReaUiRunner extends Instrumentation {
     return cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
   }
 
-  private synchronized void rememberSensitive(String packageName, String value) throws Refusal {
-    if (value.isEmpty()) return;
-    Set<String> values = sensitiveText.computeIfAbsent(packageName, key -> new LinkedHashSet<>());
-    if (values.contains(value)) return;
+  private synchronized void rememberSensitive(String value) throws Refusal {
+    if (value.isEmpty() || sensitiveText.contains(value)) return;
     if (value.length() > 65536 - sensitiveCodeUnits)
       throw new Refusal(
           "capacity",
           "Runner sensitive-text retention budget exhausted; existing redactions are retained");
-    values.add(value);
+    sensitiveText.add(value);
     sensitiveCodeUnits += value.length();
   }
 
@@ -946,12 +943,10 @@ public final class ReaUiRunner extends Instrumentation {
       String key = keys.next();
       copy.put(key, node.get(key));
     }
-    Set<String> values = sensitiveText.get(node.optString("package_name", ""));
-    if (values == null) return copy;
     for (String key : new String[] {"text", "content_description"}) {
       if (copy.isNull(key)) continue;
       String original = copy.getString(key);
-      for (String value : values) {
+      for (String value : sensitiveText) {
         if (original.contains(value)) {
           // Field omission cannot recursively expand placeholders or
           // accidentally expose a literal equal to the placeholder.

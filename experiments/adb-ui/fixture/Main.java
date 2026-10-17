@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -45,6 +46,11 @@ public final class Main extends Activity {
     input.setId(id("entry"));
     input.setSingleLine(true);
     input.setContentDescription("rea-input");
+    String mirrored = getIntent().getStringExtra("mirror_text");
+    if (mirrored != null) {
+      input.setText(mirrored);
+      input.setContentDescription("Mirrored: " + mirrored);
+    }
     input.setOnTouchListener(
         (view, event) -> {
           if (event.getAction() == MotionEvent.ACTION_UP) inputTouchUps++;
@@ -166,6 +172,18 @@ public final class Main extends Activity {
           }
         });
     layout.addView(toggle);
+    Button mirror = new Button(this);
+    mirror.setId(id("mirror_input"));
+    mirror.setText("Mirror input");
+    mirror.setAllCaps(false);
+    mirror.setOnClickListener(
+        view ->
+            startActivity(
+                new Intent()
+                    .setComponent(new ComponentName("com.rea.ui.mirror", Main.class.getName()))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    .putExtra("mirror_text", input.getText().toString())));
+    layout.addView(mirror);
     ScrollView scroll = new ScrollView(this);
     scroll.setContentDescription("rea-scroll");
     scroll.setId(id("scroll"));

@@ -26,6 +26,9 @@ before body delivery; forgotten reservations reject late input. Status,
 cancellation and acknowledgement remain reachable independently of the input
 connection. One worker owns UI operations and the most recent snapshot.
 Retained results, request bodies and sensitive-value state have explicit capacities.
+Sensitive literals are retained in one runner-wide set and masked in every
+inspected package. The existing 65,536 UTF-16-code-unit budget counts distinct
+values once; admission failure never evicts earlier redactions.
 
 The operator-owned runner owns `files/rea-ui-<instance>.sock`. Normal teardown
 checks its inode before removing it. A force-stopped runner can leave that socket

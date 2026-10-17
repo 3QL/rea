@@ -59,10 +59,34 @@ dismissing it, and verifies its disappearance before scrolling. Use a new
 output directory for each run. Observations are
 saved individually, including those preceding a later failure.
 
+## Cross-app sensitive text
+
+Build the same permission-free fixture as a second, explicitly named app:
+
+```sh
+node experiments/adb-ui/build-fixture.mjs --mirror --aapt2 /tools/aapt2 \
+  --framework /sdk/android.jar --d8 /sdk/d8.jar --output /lab/ui-mirror
+node experiments/adb-ui/verify-sensitive-scope.mjs --serial emulator-5554 \
+  --aapt2 /tools/aapt2 --apk /lab/ui-fixture/ui-probe.apk \
+  --mirror-apk /lab/ui-mirror/ui-probe.apk --output /lab/cross-app
+```
+
+The primary fixture explicitly launches `com.rea.ui.mirror` with its entered
+text. The verifier checks text/description masking in the receiving app for
+caller-marked and password input, independent CLI and MCP sessions, partial
+coverage for masked text queries and preservation of ordinary text. Each app
+has its own digest-bound admission, package lease and cleanup receipt.
+
+With a fresh operator-started runner, add `--capacity` to fill the existing
+65,536-code-unit sensitive-value budget, verify cross-package deduplication,
+refuse overflow and confirm earlier values remain masked. Restart the runner
+explicitly before other workflows that need to register new sensitive values.
+
 ## Fixture ownership
 
 The verifier requires an emulator and refuses an already-installed
-`com.rea.ui.probe`. AAPT2 inspects a digest-bound private APK snapshot, and the
+`com.rea.ui.probe` (or the explicitly selected `com.rea.ui.mirror` peer).
+AAPT2 inspects a digest-bound private APK snapshot, and the
 same bytes are installed. CLI/MCP entrypoints are module-relative; caller APK
 and output paths remain relative to the launch directory.
 

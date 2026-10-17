@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,9 +8,12 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { McpServer } from "@modelcontextprotocol/server";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { createEvidence } from "../../dist/domain/evidence.js";
-import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
 import { settleCommandOwners, withCommands } from "../command-scope.mjs";
-import { FIXTURE_PACKAGE, withFixture } from "./fixture.mjs";
+import {
+  FIXTURE_PACKAGE,
+  MIRROR_FIXTURE_PACKAGE,
+  withFixture,
+} from "./fixture.mjs";
 
 const identity = {
   binary_path: "adb",
@@ -32,6 +36,7 @@ const evidence = (operation, parameters, result) =>
 // Real filesystem snapshots and MCP wire calls; device/inspector outcomes are
 // scripted to reproduce failures a successful emulator run cannot establish.
 async function harness(t, settings = {}) {
+  const packageName = settings.package ?? FIXTURE_PACKAGE;
   const root = await mkdtemp(join(tmpdir(), "rea-ui-lifecycle-"));
   const apk = join(root, "source.apk");
   const output = join(root, "result");
@@ -67,7 +72,7 @@ async function harness(t, settings = {}) {
             matches: state.installed
               ? [
                   {
-                    package_name: FIXTURE_PACKAGE,
+                    package_name: packageName,
                     base_apk_device_path: "/data/app/fixture/base.apk",
                   },
                 ]
@@ -77,7 +82,7 @@ async function harness(t, settings = {}) {
             ...settings.inventory?.(state),
           };
         } else if (name === "uninstall_adb_package") {
-          assert.equal(input.package, FIXTURE_PACKAGE);
+          assert.equal(input.package, packageName);
           assert.equal(
             context.mcpReq.signal.aborted,
             false,
@@ -123,7 +128,7 @@ async function harness(t, settings = {}) {
       assert.equal(await readFile(args[2], "utf8"), "admitted fixture bytes");
       await settings.afterInspection?.(apk);
       return {
-        stdout: `${settings.package ?? FIXTURE_PACKAGE}\n`,
+        stdout: `${packageName}\n`,
         stderr: "",
         code: 0,
       };
@@ -136,7 +141,8 @@ async function harness(t, settings = {}) {
     assert.equal(args[1], "install-adb-package");
     const snapshot = args[3];
     assert.notEqual(snapshot, apk);
-    assert.equal(await readFile(snapshot, "utf8"), "admitted fixture bytes");
+    const snapshotBytes = await readFile(snapshot);
+    assert.equal(snapshotBytes.toString("utf8"), "admitted fixture bytes");
     state.installs++;
     state.installed = true; // Device commit can precede any host outcome.
     if (settings.install) return settings.install(state);
@@ -149,7 +155,8 @@ async function harness(t, settings = {}) {
             client: identity,
             serial: args[2],
             apk_path: snapshot,
-            ...(await hashStableFile(snapshot)),
+            sha256: createHash("sha256").update(snapshotBytes).digest("hex"),
+            bytes: snapshotBytes.length,
             replace_requested: false,
             replaced: null,
           },
@@ -171,6 +178,10 @@ async function harness(t, settings = {}) {
     signal: new AbortController().signal,
     settleCommands: async () => {}, // Scripted commands have no live children.
     leaseDirectory: join(root, "leases"),
+    ...(settings.expectedPackage === undefined
+      ? {}
+      : { expectedPackage: settings.expectedPackage }),
+    ...(settings.hashFile === undefined ? {} : { hashFile: settings.hashFile }),
   };
   return { options, state };
 }
@@ -178,6 +189,9 @@ async function harness(t, settings = {}) {
 test("rejects other APK packages and incomplete or pre-existing inventory before installation", async (t) => {
   for (const settings of [
     { package: "com.other.app" },
+    { package: MIRROR_FIXTURE_PACKAGE },
+    { expectedPackage: MIRROR_FIXTURE_PACKAGE },
+    { expectedPackage: "com.other.app" },
     { inventory: () => ({ coverage: "partial", matches: [] }) },
     { present: true },
   ]) {
@@ -189,6 +203,57 @@ test("rejects other APK packages and incomplete or pre-existing inventory before
     assert.equal(h.state.installs, 0);
     assert.equal(h.state.uninstalls, 0);
   }
+});
+
+test("owns the mirror fixture only when its exact package was selected", async (t) => {
+  const h = await harness(t, {
+    package: MIRROR_FIXTURE_PACKAGE,
+    expectedPackage: MIRROR_FIXTURE_PACKAGE,
+  });
+  const selected = await withFixture(
+    h.options,
+    ({ fixture }) => fixture.package,
+  );
+  assert.equal(selected, MIRROR_FIXTURE_PACKAGE);
+  assert.equal(h.state.installs, 1);
+  assert.equal(h.state.uninstalls, 1);
+  assert.equal(h.state.installed, false);
+});
+
+test("passes cancellation to hash admission and retains its failed close owner for retry", async (t) => {
+  let failing = true;
+  let closes = 0;
+  const primary = new Error("hash descriptor close failed");
+  const owner = {
+    async close() {
+      closes++;
+      if (failing) throw primary;
+    },
+  };
+  let selectedSignal;
+  const h = await harness(t, {
+    hashFile: async (_path, options) => {
+      selectedSignal = options.signal;
+      options.retainFailedClose(owner);
+      throw primary;
+    },
+  });
+  let failure;
+  await assert.rejects(
+    withFixture(h.options, () => assert.fail("must not install")),
+    (error) => {
+      failure = error;
+      assert.equal(error.cause, primary);
+      assert.equal(error.cleanupResources.size, 1);
+      return true;
+    },
+  );
+  assert.equal(selectedSignal, h.options.signal);
+  assert.equal(h.state.installs, 0);
+  assert.equal(closes, 1);
+  failing = false;
+  for (const resource of failure.cleanupResources) await resource.close();
+  assert.equal(closes, 2);
 });
 
 test("installs the inspected snapshot even if the source is replaced, using canonical blank adb selection", async (t) => {

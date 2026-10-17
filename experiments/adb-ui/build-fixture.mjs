@@ -10,6 +10,7 @@ const { values } = parseArgs({
     d8: { type: "string" },
     output: { type: "string" },
     aapt2: { type: "string", default: "aapt2" },
+    mirror: { type: "boolean", default: false },
   },
 });
 for (const name of ["framework", "d8", "output"])
@@ -61,7 +62,12 @@ await withCommands(async (run) => {
     "-I",
     resolve(values.framework),
     "--manifest",
-    resolve(import.meta.dirname, "fixture/AndroidManifest.xml"),
+    resolve(
+      import.meta.dirname,
+      values.mirror
+        ? "fixture/AndroidManifest.mirror.xml"
+        : "fixture/AndroidManifest.xml",
+    ),
     "-o",
     unsigned,
     resources,

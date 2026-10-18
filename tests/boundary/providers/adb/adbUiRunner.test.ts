@@ -124,6 +124,7 @@ if (request.operation === 'ping') {
   if(mode.forget_offline) { console.error('device offline'); process.exit(1); }
   fs.rmSync(jobFile(request.target_request_id),{force:true}); reply({state:'forgotten'});
 } else if (request.operation === 'status') {
+  if(mode.status_offline) { console.error('device offline'); process.exit(1); }
   const file=jobFile(request.target_request_id);
   const response=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null;
   if(mode.status_capacity) console.log('Broadcast completed: result=1, data="REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind:'capacity',reason:'Response exceeds the Binder transport budget'}))).toString('base64')+'"');
@@ -139,7 +140,8 @@ if (request.operation === 'ping') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
-  if(mode.kind==='hang') {
+  if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
+  else if(mode.kind==='hang') {
     fs.writeFileSync(path.join(root,'active'),request.request_id);
     fs.writeFileSync(jobFile(request.request_id),JSON.stringify({state:'running'}));
   } else fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,result)));
@@ -467,6 +469,76 @@ it("preserves a completed observation when acknowledgement fails and resolves cl
   });
   expect(result.error.cleanupIncomplete).toBe(true);
   await setMode({});
+  await provider.close();
+  expect(result.error.cleanupIncomplete).toBe(false);
+});
+
+const actionInput = {
+  ...scope,
+  snapshot_id: snapshotId,
+  element_id: "0",
+  action: { kind: "tap" },
+} as const;
+
+it.each([
+  ["a completed action", {}, expect.anything],
+  ["a refused action", { action_refusal: true }, expect.anything],
+])(
+  "attaches %s recovered by a later cleanup retry to the returned error",
+  async (label, mode, _evidence) => {
+    const { service, provider, setMode, workspace } = await fixture({
+      ...mode,
+      status_offline: true,
+      cancel_offline: true,
+    });
+    const result = await service.execute("perform_adb_ui_action", actionInput);
+    if (result.ok) throw new Error("Expected the offline status failure");
+    // The action was submitted; the host lost the report before the runner
+    // answered, so the retry owns the outcome the caller already received.
+    expect(result.error.partialObservation).toBeUndefined();
+    expect(result.error.cleanupIncomplete).toBe(true);
+    await setMode({});
+    await provider.close();
+    expect(result.error.cleanupIncomplete).toBe(false);
+    if (label === "a refused action")
+      expect(
+        (result.error.cause instanceof AggregateError
+          ? result.error.cause.errors.map((error) => String(error))
+          : [String(result.error.cause)]
+        ).join("\n"),
+      ).toContain("stale_element");
+    else
+      expect(parseEvidence(result.error.partialObservation)).toMatchObject({
+        evidence_id: expect.any(String),
+        operation: "perform_adb_ui_action",
+        authority: "controlled-replay",
+        normalized_result: {
+          serial: scope.serial,
+          dispatch_attempted: true,
+          action_completed: true,
+        },
+      });
+  },
+);
+
+it("retains a refusal recovered while cleaning up the interrupted request", async () => {
+  const { service, provider } = await fixture({
+    action_refusal: true,
+    status_offline: true,
+  });
+  const result = await service.execute("perform_adb_ui_action", actionInput);
+  if (result.ok) throw new Error("Expected the offline status failure");
+  // Cleanup reached the runner and recovered its definitive refusal; that answer
+  // belongs to the caller next to the transport failure that hid it.
+  expect(result.error.partialObservation).toBeUndefined();
+  expect(result.error.cleanupIncomplete).toBe(false);
+  expect(
+    (result.error.cause instanceof AggregateError
+      ? result.error.cause.errors.map((error) => String(error))
+      : [String(result.error.cause)]
+    ).join("\n"),
+  ).toContain("stale_element");
+  // The recovered request was released, so the next cleanup settles without work.
   await provider.close();
   expect(result.error.cleanupIncomplete).toBe(false);
 });

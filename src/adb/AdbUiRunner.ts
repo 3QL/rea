@@ -89,6 +89,13 @@ interface RemoteRequest {
   readonly socketPath: string;
   settled?: boolean;
   completion?: Reply;
+  /**
+   * Attach a terminal reply recovered by a later cleanup retry to the outcome
+   * this request already produced. The request owns the recovery until it is
+   * forgotten, because a completed action must never disappear behind a
+   * transport failure that happened while reporting it.
+   */
+  recover?: (reply: Reply) => void;
 }
 
 /** Parse the producer's terminal record, never a substring inside Android diagnostics. */
@@ -439,8 +446,12 @@ export class AdbUiRunner {
             );
           if (result.state === "settled" || result.state === "missing") {
             request.settled = true;
-            if (result.response !== null)
+            if (result.response !== null) {
               this.#rememberCompletion(request, result.response);
+              // The originating outcome may already have been returned; it still
+              // owns this request's recovery until the request is forgotten.
+              request.recover?.(result.response);
+            }
             await this.#forget(request, signal);
             break;
           }
@@ -564,6 +575,11 @@ export class AdbUiRunner {
     let primary: AnalysisError;
     let owned: RemoteRequest | undefined;
     let observed: UiObservation | undefined;
+    // A returned outcome is final; a later recovery can only add provenance.
+    // The caller holds the composed cleanup failure, not the primary, so a late
+    // recovery attaches to whichever error this request actually produced.
+    let delivered = false;
+    let returned: AnalysisError | undefined;
     try {
       await this.#retryCleanup();
       if (signal?.aborted)
@@ -784,24 +800,22 @@ export class AdbUiRunner {
                 { cause },
               );
     }
-    const retainCompleted = () => {
-      if (!owned?.completion?.ok) return;
+    // One recovery owner: a terminal reply discovered in this frame or by a later
+    // cleanup retry is attached to the same outcome, whichever arrives first.
+    // A recovered refusal is the runner's definitive answer, so it replaces a
+    // cancellation that is still undecided and otherwise stays visible as a
+    // secondary failure instead of being dropped with the request.
+    const retainCompletion = (reply: Reply): void => {
+      if (owned === undefined) return;
       try {
-        observed ??= this.#validateObservation(
-          request,
-          owned,
-          owned.completion,
-          signal,
-        );
+        observed ??= this.#validateObservation(request, owned, reply, signal);
       } catch (cause) {
-        if (
-          primary instanceof AnalysisCancelledError &&
-          cause instanceof AnalysisError
-        ) {
+        if (!(cause instanceof AnalysisError)) return;
+        if (!delivered && primary instanceof AnalysisCancelledError) {
           const cancellation = primary;
           primary = cause;
           primary.retainSecondaryFailure(cancellation, {});
-        }
+        } else (returned ?? primary).retainSecondaryFailure(cause, {});
         return;
       }
       // Recovered UI facts become the same Evidence a successful call returns, so an
@@ -814,7 +828,7 @@ export class AdbUiRunner {
         observed,
         provider,
       );
-      primary.retainPartialObservation(
+      (returned ?? primary).retainPartialObservation(
         createAnalysisExecutionEvidence(
           request.operation,
           adbEvidenceParameters(request, recovered.result),
@@ -823,6 +837,11 @@ export class AdbUiRunner {
           "controlled-replay",
         ),
       );
+    };
+    if (owned !== undefined) owned.recover = retainCompletion;
+    const retainCompleted = (): void => {
+      if (owned?.completion === undefined) return;
+      retainCompletion(owned.completion);
     };
     try {
       await this.#retryCleanup();
@@ -843,9 +862,13 @@ export class AdbUiRunner {
         request.operation,
       ).bindCleanupDependencies([primary, cleanup]);
       this.#trackCleanupError(combined);
+      delivered = true;
+      returned = combined;
       return err(combined);
     }
     retainCompleted();
+    delivered = true;
+    returned = primary;
     return err(primary);
   }
 

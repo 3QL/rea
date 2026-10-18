@@ -178,6 +178,12 @@ application state is left as-is.
 - One-shot CLI close failures preserve the original operation error and any
   completed/partial observation, so an acknowledgement failure does not hide
   a dispatched action.
+- A request owns its recovery until the runner forgets it. If a cleanup retry,
+  including the one-shot CLI's `close`, reaches the runner after the outcome was
+  already returned, the recovered terminal reply is attached to that same error:
+  completed facts become its Evidence, and a recovered refusal replaces an
+  undecided cancellation or is retained as a secondary failure. The request is
+  released only after that recovery.
 
 End the operator-owned runner explicitly when finished:
 

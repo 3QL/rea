@@ -18,6 +18,7 @@ import {
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
   adbClientIdentitySchema,
   adbPackageNameSchema,
@@ -815,7 +816,12 @@ export class AdbUiRunner {
           const cancellation = primary;
           primary = cause;
           primary.retainSecondaryFailure(cancellation, {});
-        } else (returned ?? primary).retainSecondaryFailure(cause, {});
+        } else
+          // Callers read the projected error, not the cause chain, so the
+          // runner's definitive refusal is retained where it stays visible.
+          (returned ?? primary).retainSecondaryFailure(cause, {
+            recovered_refusal: projectAnalysisError(cause),
+          });
         return;
       }
       // Recovered UI facts become the same Evidence a successful call returns, so an

@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
   createAnalysisExecution,
+  createAnalysisExecutionEvidence,
   type AnalysisExecution,
   type ProviderIdentity,
 } from "../application/AnalysisProvider.js";
@@ -38,6 +39,7 @@ import {
   type ProviderProcessSupervisor,
 } from "../process/ProviderProcess.js";
 import { resolveWindowsProviderExecutable } from "../process/WindowsProviderExecutable.js";
+import { adbEvidenceParameters } from "../domain/adb/adbEvidenceParameters.js";
 import { adbArguments } from "./AdbCommand.js";
 
 const PACKAGE_ENV = "REA_ADB_UI_PACKAGE";
@@ -47,6 +49,12 @@ const RESPONSE_BYTES = 256 * 1024;
 const CAPTURE_BYTES = 1024 * 1024;
 const CLEANUP_MS = 5000;
 const PROTOCOL = 2;
+/** Stated for every UI execution, whether it completed or was recovered. */
+const UI_LIMITATIONS = [
+  "UI Automator observes accessibility-exposed nodes; off-screen, custom-drawn and inaccessible content can be missing.",
+  "Snapshots and input dispatch are sequential observations, not an atomic UI transaction. A returned action is not proof of the intended application outcome.",
+  "Runner version and instance identity are reported by the operator-owned instrumentation process; REA does not install, start or stop that process implicitly.",
+] as const;
 const envelope = z
   .strictObject({
     protocol: z.literal(PROTOCOL),
@@ -157,6 +165,19 @@ export class AdbUiRunner {
       this.environment,
       this.windowsIsFile === undefined ? {} : { isFile: this.windowsIsFile },
     );
+  }
+
+  /** One validated UI execution, shared by the success and recovery paths. */
+  #execution(
+    request: AdbUiRequest,
+    client: z.infer<typeof adbClientIdentitySchema>,
+    serial: string,
+    observed: UiObservation,
+    provider: ProviderIdentity,
+  ): AnalysisExecution {
+    return createAnalysisExecution({ client, serial, ...observed }, provider, {
+      limitations: UI_LIMITATIONS,
+    });
   }
 
   get pendingResources(): readonly string[] {
@@ -746,15 +767,7 @@ export class AdbUiRunner {
         throw new AnalysisCancelledError(request.operation, {
           cause: signal.reason,
         });
-      return ok(
-        createAnalysisExecution({ client, serial, ...observed }, provider, {
-          limitations: [
-            "UI Automator observes accessibility-exposed nodes; off-screen, custom-drawn and inaccessible content can be missing.",
-            "Snapshots and input dispatch are sequential observations, not an atomic UI transaction. A returned action is not proof of the intended application outcome.",
-            "Runner version and instance identity are reported by the operator-owned instrumentation process; REA does not install, start or stop that process implicitly.",
-          ],
-        }),
-      );
+      return ok(this.#execution(request, client, serial, observed, provider));
     } catch (cause) {
       primary =
         signal?.aborted &&
@@ -791,11 +804,25 @@ export class AdbUiRunner {
         }
         return;
       }
-      primary.retainPartialObservation({
-        provider_id: "adb",
-        operation: request.operation,
-        result: { client, serial: request.input.serial, ...observed },
-      });
+      // Recovered UI facts become the same Evidence a successful call returns, so an
+      // exported session records the action and its after-state even when
+      // acknowledgement, cleanup or the caller interrupted the request.
+      const recovered = this.#execution(
+        request,
+        client,
+        request.input.serial,
+        observed,
+        provider,
+      );
+      primary.retainPartialObservation(
+        createAnalysisExecutionEvidence(
+          request.operation,
+          adbEvidenceParameters(request, recovered.result),
+          recovered,
+          "observed",
+          "controlled-replay",
+        ),
+      );
     };
     try {
       await this.#retryCleanup();

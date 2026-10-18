@@ -7,6 +7,7 @@ import {
 } from "../../../../src/adb/AdbUiRunner.js";
 import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
 import { adbUiInputSchemas } from "../../../../src/domain/adb/adbUiAnalysis.js";
+import { parseEvidence } from "../../../../src/domain/evidence.js";
 import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDeviceAnalysisService.js";
 import { toolContract } from "../../../../src/contracts/toolContracts.js";
 import {
@@ -424,9 +425,15 @@ it.each(["valid", "wrong-package"])(
       expect(result.error._tag).toBe("AnalysisCancelledError");
       expect(result.error.cause).toBe(reason);
       expect(result.error.partialObservation).toMatchObject({
-        provider_id: "adb",
+        evidence_id: expect.any(String),
+        provider: { id: "adb", version: client.version },
         operation: request.operation,
-        result: { dispatch_attempted: true, action_completed: true },
+        authority: "controlled-replay",
+        normalized_result: {
+          serial: scope.serial,
+          dispatch_attempted: true,
+          action_completed: true,
+        },
       });
     } else {
       expect(result.error._tag).toBe("AnalysisProtocolError");
@@ -441,10 +448,17 @@ it("preserves a completed observation when acknowledgement fails and resolves cl
   });
   const result = await service.execute("inspect_adb_ui", scope);
   if (result.ok) throw new Error("Expected acknowledgement cleanup failure");
-  expect(result.error.partialObservation).toMatchObject({
-    provider_id: "adb",
+  // A recovered observation is a complete, recordable Evidence record, so the
+  // session exports it instead of an unreferenced fact bundle.
+  expect(parseEvidence(result.error.partialObservation)).toMatchObject({
+    evidence_id: expect.any(String),
+    provider: { id: "adb", version: "34.0.5-ui-fixture" },
     operation: "inspect_adb_ui",
-    result: {
+    authority: "controlled-replay",
+    confidence: "observed",
+    limitations: expect.any(Array),
+    normalized_result: {
+      serial: scope.serial,
       snapshot: {
         id: snapshotId,
         nodes: [expect.objectContaining({ text: "Hello 世界" })],
@@ -486,8 +500,10 @@ it("settles a result-transport capacity refusal while preserving recovered facts
   expect(result.error._tag).toBe("AnalysisResourceConstraintError");
   expect(result.error.cleanupIncomplete).toBe(false);
   expect(result.error.partialObservation).toMatchObject({
+    evidence_id: expect.any(String),
     operation: "inspect_adb_ui",
-    result: { snapshot: { id: snapshotId } },
+    authority: "controlled-replay",
+    normalized_result: { serial: scope.serial, snapshot: { id: snapshotId } },
   });
 });
 

@@ -166,7 +166,10 @@ application state is left as-is.
 - Cancellation settles host commands, cancels only the owned remote request,
   waits for its work to settle and acknowledges its retained result. A separate
   five-second cleanup budget applies. Completed facts survive acknowledgement
-  failures as partial observations. Failed cleanup retains exact request/runner
+  failures as partial observations: a recovered observation is composed into the
+  same Evidence a successful call returns, with the same redaction, limitations
+  and `controlled-replay` authority, so an exported session records it. Failed
+  cleanup retains exact request/runner
   identities for later retry; another runner instance cannot prove old cleanup.
   Host launch preparation creates no remote owner. Once a request is prepared
   on the runner, a later stdin transport failure reconciles that reservation

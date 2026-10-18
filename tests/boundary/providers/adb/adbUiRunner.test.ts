@@ -233,8 +233,13 @@ it("cancels only the owned remote request after host command settlement", async 
     { ...scope, selector: {}, timeout_ms: 30000 },
     { signal: controller.signal },
   );
+  // The fake adb is a real child process; its first write can land after the
+  // default poll budget when the runner is saturated.
   await expect
-    .poll(() => readFile(workspace.path("active"), "utf8"))
+    .poll(() => readFile(workspace.path("active"), "utf8"), {
+      timeout: 15_000,
+      interval: 50,
+    })
     .toMatch(/^[a-f0-9-]{36}$/u);
   const activeId = await readFile(workspace.path("active"), "utf8");
   controller.abort();
@@ -350,8 +355,13 @@ it("retains failed remote cleanup for a later close retry", async () => {
     { ...scope, selector: {} },
     { signal: controller.signal },
   );
+  // The fake adb is a real child process; its first write can land after the
+  // default poll budget when the runner is saturated.
   await expect
-    .poll(() => readFile(workspace.path("active"), "utf8"))
+    .poll(() => readFile(workspace.path("active"), "utf8"), {
+      timeout: 15_000,
+      interval: 50,
+    })
     .toMatch(/^[a-f0-9-]{36}$/u);
   controller.abort();
   const result = await pending;

@@ -43,7 +43,6 @@ export const registerAdbCommands = (
             provider,
             "adb",
             operation,
-            undefined,
             signal,
           );
         }),

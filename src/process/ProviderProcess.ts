@@ -502,9 +502,11 @@ export class ProviderProcessSupervisor {
     );
   }
 
-  /** Wait until output streams close; WindowsOwnedProcess closes only after its whole Job Object settles. */
+  /** Wait until output streams close; omit the timeout to await physical completion.
+   * WindowsOwnedProcess closes only after its whole Job Object settles.
+   */
   async waitForOutputClose(
-    timeoutMs: number,
+    timeoutMs?: number,
     signal?: AbortSignal,
   ): Promise<boolean> {
     return waitForProcessEvent(
@@ -857,7 +859,7 @@ const waitForSpawn = (child: ChildProcess): Promise<void> =>
 const waitForProcessEvent = async (
   observed: boolean,
   event: Promise<unknown>,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   signal?: AbortSignal,
 ): Promise<boolean> => {
   if (observed) return true;
@@ -868,7 +870,8 @@ const waitForProcessEvent = async (
     return await Promise.race([
       event.then(() => true),
       new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+        if (timeoutMs !== undefined)
+          timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
         if (signal !== undefined) {
           onAbort = () => resolve(false);
           signal.addEventListener("abort", onAbort, { once: true });

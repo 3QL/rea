@@ -283,6 +283,9 @@ export class AdbUiRunner {
                   "-T",
                   "run-as",
                   packageName,
+                  // AOSP's run-as reads the package from argv[1] and the
+                  // optional --user from argv[2], so the user option follows
+                  // the package; its header comment shows the older order.
                   "--user",
                   "0",
                   "/system/bin/toybox",

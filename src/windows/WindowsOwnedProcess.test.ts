@@ -305,6 +305,47 @@ describe("Windows owned process input", () => {
     }
   });
 
+  it("reports a deferred release failure instead of rejecting the host", async () => {
+    vi.useFakeTimers();
+    try {
+      let deliver: ((written: number) => void) | undefined;
+      const written = new Promise<number>((resolve) => {
+        deliver = resolve;
+      });
+      let shouldFailClose = true;
+      const { native, calls } = authority({
+        polls: [{ ...settledPoll }, { ...settledPoll }],
+        failClose: () => shouldFailClose,
+        stdinWrite: (bytes) => written.then(() => bytes.length),
+      });
+      const child = launchWithInput(native);
+      const failures: string[] = [];
+      child.on("error", (error: Error) => failures.push(error.message));
+      child.stdin?.on("error", () => undefined);
+      const delivered = new Promise<void>((resolve) => {
+        child.stdin?.write("body", () => resolve());
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+      deliver?.(4);
+      await delivered;
+      await vi.advanceTimersByTimeAsync(25);
+
+      // The native close failure is reported on the error channel and the
+      // job stays owned for a cleanup retry.
+      expect(failures).toContain("native close failed");
+      expect(
+        calls.filter(({ operation }) => operation === "process_close"),
+      ).toHaveLength(1);
+      shouldFailClose = false;
+      const cleanup = child.cleanup();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await cleanup).toMatchObject({ cleaned: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a genuine write failure visible", async () => {
     vi.useFakeTimers();
     try {

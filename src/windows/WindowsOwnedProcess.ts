@@ -372,13 +372,18 @@ export class WindowsOwnedProcess extends EventEmitter {
         this.#release();
       } else this.#schedule(idle ? 25 : 0);
     } catch (cause: unknown) {
-      const failure = cause instanceof Error ? cause : new Error(String(cause));
-      this.#failure = failure.message;
-      // Native lifecycle failures belong to the error/cleanup channels, never
-      // the captured stderr observation produced by the child itself.
-      if (this.listenerCount("error") > 0) this.emit("error", failure);
-      // Retain the original job so explicit cleanup can retry its observation.
+      this.#reportLifecycleFailure(cause);
     }
+  }
+
+  /** Report a native lifecycle failure on the error and cleanup channels. */
+  #reportLifecycleFailure(cause: unknown): void {
+    const failure = cause instanceof Error ? cause : new Error(String(cause));
+    this.#failure = failure.message;
+    // Native lifecycle failures belong to the error/cleanup channels, never
+    // the captured stderr observation produced by the child itself.
+    if (this.listenerCount("error") > 0) this.emit("error", failure);
+    // Retain the original job so explicit cleanup can retry its observation.
   }
 
   #writeOutput(stream: PassThrough, bytes: Buffer): void {
@@ -421,7 +426,14 @@ export class WindowsOwnedProcess extends EventEmitter {
       timer.unref?.();
     });
     void Promise.race([settled, deadline]).then(() => {
-      this.#releaseStreams();
+      try {
+        this.#releaseStreams();
+      } catch (cause: unknown) {
+        // The deferred release reports through the same error and cleanup
+        // channels as the synchronous one; a native close failure must never
+        // escape as an unhandled rejection.
+        this.#reportLifecycleFailure(cause);
+      }
     });
   }
 

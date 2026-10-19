@@ -158,6 +158,11 @@ application state is left as-is.
 - Runtime observations use `controlled-replay` Evidence authority and preserve
   the caller-selected device, scope and runner-reported identity. No association
   with a local APK's bytes is established by an equal package name.
+- A password-marked node keeps both of its textual fields out of the
+  observation: the runner redacts the text and the content description together,
+  reports both as redacted, and reports a search over a redacted field as
+  partial coverage. An application that stores the entered value in the
+  description of a password field cannot leak it through an inspection.
 - Work is prepared by request ID before its body is sent over the private stdin
   channel. A cancelled/forgotten preparation rejects late input. Submission is
   acknowledged immediately, then polled by request ID; long UI waits and blocked

@@ -62,6 +62,28 @@ copy and hashes make this controlled state injection reproducible. Ordinary
 runner sources are untouched by the builder. Use a freshly built primary fixture
 containing the counters and restore the ordinary helper after verification.
 
+### Password description redaction
+
+Build the primary and mirror fixtures, then run the focused verifier against the
+runner that is installed:
+
+```sh
+node experiments/adb-ui/build-fixture.mjs --aapt2 /tools/aapt2 \
+  --framework /sdk/android.jar --d8 /sdk/d8.jar --output /lab/ui-fixture
+node experiments/adb-ui/build-fixture.mjs --mirror --aapt2 /tools/aapt2 \
+  --framework /sdk/android.jar --d8 /sdk/d8.jar --output /lab/ui-fixture-mirror
+node experiments/adb-ui/verify-password-description.mjs --serial emulator-5554 \
+  --aapt2 /tools/aapt2 --apk /lab/ui-fixture/ui-probe.apk \
+  --mirror-apk /lab/ui-fixture-mirror/ui-probe.apk --output /lab/password-result
+```
+
+The mirror application keeps the entered value in its content description. The
+verifier turns that field into a password field, so the description holds a
+value REA never typed, and requires that both textual fields stay redacted,
+that the value never reaches the observation, and that a search over the
+redacted description reports partial coverage. An unredacted runner fails the
+verifier with the value in the node facts.
+
 ## Compose
 
 Build the separate Compose fixture with Gradle 8.9, JDK 17 and SDK 35:

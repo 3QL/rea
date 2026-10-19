@@ -882,8 +882,10 @@ public final class ReaUiRunner extends Instrumentation {
         node.getViewIdResourceName(),
         "text",
         node.isPassword() ? null : text(node.getText()),
+        // A password field can carry the entered value in its description
+        // instead of its text, so both textual fields are redacted together.
         "content_description",
-        text(node.getContentDescription()),
+        node.isPassword() ? null : text(node.getContentDescription()),
         "bounds",
         bounds(declaredBounds),
         "visible_bounds",
@@ -911,7 +913,7 @@ public final class ReaUiRunner extends Instrumentation {
         "text_redacted",
         node.isPassword(),
         "content_description_redacted",
-        false,
+        node.isPassword(),
         "visible",
         node.isVisibleToUser());
   }

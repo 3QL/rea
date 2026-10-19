@@ -49,6 +49,10 @@ public final class ReaUiRunner extends Instrumentation {
   // Base64 is transported in a Binder String (UTF-16). 256 KiB of JSON expands
   // to at most 699,056 bytes there, leaving room in Binder's 1 MiB transaction.
   private static final int RESPONSE_BYTES = 256 * 1024;
+  // A retained completion travels inside a status or cancel envelope, so it
+  // keeps room for that envelope. An untransportable completion would collapse
+  // every later reply into a capacity error and keep its request slot occupied.
+  private static final int COMPLETION_BYTES = RESPONSE_BYTES - 16384;
   private static final int REQUEST_BYTES = 16 * 1024;
   private final String instance = UUID.randomUUID().toString();
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -91,13 +95,30 @@ public final class ReaUiRunner extends Instrumentation {
             instance,
             ((REQUEST_BYTES + 2) / 3) * 4,
             encoded -> exchange(encoded, true));
+    BroadcastReceiver receiver =
+        new BroadcastReceiver() {
+          @Override
+          public void onReceive(Context ignored, Intent intent) {
+            setResultData(exchange(intent.getStringExtra("request"), false));
+            setResultCode(0);
+          }
+        };
+    IntentFilter filter = new IntentFilter(context.getPackageName() + ".REQUEST");
+    boolean registered = false;
     try {
       if ((context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)
           == 0)
         throw new java.io.IOException(
             "The private UI transport requires the operator-built debug runner");
       socket.start();
+      if (Build.VERSION.SDK_INT >= 33)
+        context.registerReceiver(
+            receiver, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
+      else context.registerReceiver(receiver, filter, Manifest.permission.DUMP, null);
+      registered = true;
     } catch (Exception cause) {
+      // A failed setup must not leave the socket node behind: the next launch
+      // refuses a pre-existing path until the operator removes it.
       try {
         socket.close();
       } catch (Exception cleanup) {
@@ -108,19 +129,6 @@ public final class ReaUiRunner extends Instrumentation {
       finish(-1, failure);
       return;
     }
-    BroadcastReceiver receiver =
-        new BroadcastReceiver() {
-          @Override
-          public void onReceive(Context ignored, Intent intent) {
-            setResultData(exchange(intent.getStringExtra("request"), false));
-            setResultCode(0);
-          }
-        };
-    IntentFilter filter = new IntentFilter(context.getPackageName() + ".REQUEST");
-    if (Build.VERSION.SDK_INT >= 33)
-      context.registerReceiver(
-          receiver, filter, Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED);
-    else context.registerReceiver(receiver, filter, Manifest.permission.DUMP, null);
     Bundle ready = new Bundle();
     ready.putString("stream", "REA_UI_READY " + instance + "\n");
     sendStatus(0, ready);
@@ -129,7 +137,7 @@ public final class ReaUiRunner extends Instrumentation {
     } catch (InterruptedException interrupted) {
       Thread.currentThread().interrupt();
     } finally {
-      context.unregisterReceiver(receiver);
+      if (registered) context.unregisterReceiver(receiver);
       try {
         socket.close();
       } catch (java.io.IOException cleanup) {
@@ -262,7 +270,9 @@ public final class ReaUiRunner extends Instrumentation {
             failure = cause;
           } finally {
             try {
-              call.response = response(request, result, failure);
+              // The retained completion must stay transportable, because the
+              // status and cancel replies carry it inside their own envelope.
+              call.response = boundedResponse(response(request, result, failure), COMPLETION_BYTES);
             } catch (JSONException malformed) {
               call.response = null;
             }
@@ -1007,26 +1017,33 @@ public final class ReaUiRunner extends Instrumentation {
   }
 
   private String encodeResponse(JSONObject message) throws JSONException {
+    JSONObject response = boundedResponse(message, RESPONSE_BYTES);
+    byte[] bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
+    return "REA_UI_V2:" + Base64.encodeToString(bytes, Base64.NO_WRAP);
+  }
+
+  /**
+   * Bound one terminal response to the transport budget. A response that cannot travel is reported
+   * as a capacity refusal instead of being carried silently, so the request that owns it can still
+   * be released.
+   */
+  private JSONObject boundedResponse(JSONObject message, int limit) throws JSONException {
     JSONObject response = (JSONObject) maskResult(message);
     byte[] bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
-    if (bytes.length > RESPONSE_BYTES) {
-      response =
-          object(
-              "protocol",
-              2,
-              "request_id",
-              message.optString("request_id", null),
-              "instance_id",
-              instance,
-              "ok",
-              false,
-              "result",
-              null,
-              "error",
-              object("kind", "capacity", "reason", "Response exceeds the Binder transport budget"));
-      bytes = asciiJson(response).getBytes(StandardCharsets.UTF_8);
-    }
-    return "REA_UI_V2:" + Base64.encodeToString(bytes, Base64.NO_WRAP);
+    if (bytes.length <= limit) return response;
+    return object(
+        "protocol",
+        2,
+        "request_id",
+        message.optString("request_id", null),
+        "instance_id",
+        instance,
+        "ok",
+        false,
+        "result",
+        null,
+        "error",
+        object("kind", "capacity", "reason", "Response exceeds the Binder transport budget"));
   }
 
   private JSONObject response(JSONObject request, JSONObject result, Throwable failure)

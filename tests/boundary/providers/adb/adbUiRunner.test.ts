@@ -116,6 +116,11 @@ if (request.operation === 'ping') {
   else reply({state:'prepared'});
 } else if (request.operation === 'cancel') {
   if(mode.cancel_offline) { console.error('device offline'); process.exit(1); }
+  if(mode.cancel_capacity) {
+    const encoded='REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind:'capacity',reason:'Response exceeds the Binder transport budget'}))).toString('base64');
+    console.log('Broadcast completed: result=0, data="'+encoded+'"');
+    process.exit(0);
+  }
   fs.rmSync(path.join(root, 'active'), {force:true});
   const file=jobFile(request.cancel_request_id);
   let response=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null;
@@ -538,6 +543,25 @@ it.each([
       });
   },
 );
+
+it("releases a request whose completion the runner could not transport", async () => {
+  const { service, provider, workspace } = await fixture({
+    status_offline: true,
+    cancel_capacity: true,
+  });
+  const result = await service.execute("perform_adb_ui_action", actionInput);
+  if (result.ok) throw new Error("Expected the offline status failure");
+  // The runner settled the request but could not carry its completion. The
+  // request must still be released, or its runner slot stays occupied.
+  expect(result.error.cleanupIncomplete).toBe(false);
+  const calls = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(calls.map((call) => call.operation)).toContain("forget");
+  expect(calls.filter((call) => call.operation === "forget")).toHaveLength(1);
+  await provider.close();
+});
 
 it("retains a refusal recovered while cleaning up the interrupted request", async () => {
   const { service, provider } = await fixture({

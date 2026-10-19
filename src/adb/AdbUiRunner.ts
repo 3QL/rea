@@ -433,11 +433,21 @@ export class AdbUiRunner {
             CLEANUP_MS,
             signal,
           );
-          if (reply.instance_id !== request.instanceId || !reply.ok)
-            throw new Error(
-              reply.error?.reason ??
-                "Runner identity changed during cancellation",
-            );
+          if (reply.instance_id !== request.instanceId)
+            throw new Error("Runner identity changed during cancellation");
+          if (!reply.ok) {
+            if (reply.error?.kind !== "capacity")
+              throw new Error(
+                reply.error?.reason ??
+                  "Runner identity changed during cancellation",
+              );
+            // The runner settled the request but could not transport its
+            // completion. Releasing it keeps the runner's slot available; the
+            // completion itself never reached the caller.
+            request.settled = true;
+            await this.#forget(request, signal);
+            break;
+          }
           const result = z
             .strictObject({
               state: z.enum(["cancelling", "settled", "missing"]),

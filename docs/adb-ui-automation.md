@@ -163,6 +163,9 @@ application state is left as-is.
   acknowledged immediately, then polled by request ID; long UI waits and blocked
   input sockets leave the control channel reachable. Replies remain retained
   until acknowledged; at most 16 prepared/unacknowledged requests are admitted.
+  A completion too large for the transport budget is reported as a capacity
+  refusal instead of being carried, and the request that owns it is still
+  released, so an oversized result never holds a runner slot.
 - Cancellation settles host commands, cancels only the owned remote request,
   waits for its work to settle and acknowledges its retained result. A separate
   five-second cleanup budget applies. Completed facts survive acknowledgement
@@ -178,6 +181,10 @@ application state is left as-is.
 - One-shot CLI close failures preserve the original operation error and any
   completed/partial observation, so an acknowledgement failure does not hide
   a dispatched action.
+- The runner's private socket is removed when the runner stops. A setup failure,
+  including a rejected receiver registration, closes the socket before the
+  instrumentation reports the failure, so the next launch does not refuse a
+  leftover socket path.
 - A request owns its recovery until the runner forgets it. If a cleanup retry,
   including the one-shot CLI's `close`, reaches the runner after the outcome was
   already returned, the recovered terminal reply is attached to that same error:

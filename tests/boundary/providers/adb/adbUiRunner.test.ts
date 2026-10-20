@@ -499,6 +499,18 @@ const projectedRecoveredRefusals = (
   return found;
 };
 
+/** Run an action whose status reply never reached the host. */
+const runLostStatusAction = async (
+  state: Awaited<ReturnType<typeof fixture>>,
+) => {
+  const result = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (result.ok) throw new Error("Expected the offline status failure");
+  return result;
+};
+
 const actionInput = {
   ...scope,
   snapshot_id: snapshotId,
@@ -512,19 +524,18 @@ it.each([
 ])(
   "attaches %s recovered by a later cleanup retry to the returned error",
   async (label, mode, _evidence) => {
-    const { service, provider, setMode, workspace } = await fixture({
+    const state = await fixture({
       ...mode,
       status_offline: true,
       cancel_offline: true,
     });
-    const result = await service.execute("perform_adb_ui_action", actionInput);
-    if (result.ok) throw new Error("Expected the offline status failure");
+    const result = await runLostStatusAction(state);
     // The action was submitted; the host lost the report before the runner
     // answered, so the retry owns the outcome the caller already received.
     expect(result.error.partialObservation).toBeUndefined();
     expect(result.error.cleanupIncomplete).toBe(true);
-    await setMode({});
-    await provider.close();
+    await state.setMode({});
+    await state.provider.close();
     expect(result.error.cleanupIncomplete).toBe(false);
     if (label === "a refused action") {
       const refusals = projectedRecoveredRefusals(result.error);
@@ -564,12 +575,11 @@ it("releases a request whose completion the runner could not transport", async (
 });
 
 it("retains a refusal recovered while cleaning up the interrupted request", async () => {
-  const { service, provider } = await fixture({
+  const state = await fixture({
     action_refusal: true,
     status_offline: true,
   });
-  const result = await service.execute("perform_adb_ui_action", actionInput);
-  if (result.ok) throw new Error("Expected the offline status failure");
+  const result = await runLostStatusAction(state);
   // Cleanup reached the runner and recovered its definitive refusal; that answer
   // belongs to the caller next to the transport failure that hid it.
   expect(result.error.partialObservation).toBeUndefined();
@@ -579,7 +589,7 @@ it("retains a refusal recovered while cleaning up the interrupted request", asyn
   expect(refusals).toHaveLength(1);
   expect(JSON.stringify(refusals[0])).toContain("stale_element");
   // The recovered request was released, so the next cleanup settles without work.
-  await provider.close();
+  await state.provider.close();
   expect(result.error.cleanupIncomplete).toBe(false);
 });
 

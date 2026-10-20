@@ -267,16 +267,26 @@ describe("Windows Job Object memory limits", () => {
 });
 
 describe("Windows owned process input", () => {
+  /** A native write that stays in flight until the test releases it. */
+  const deferredWrite = () => {
+    let deliver: ((written: number) => void) | undefined;
+    const written = new Promise<number>((resolve) => {
+      deliver = resolve;
+    });
+    return {
+      written,
+      deliver: (value: number) => deliver?.(value),
+      stdinWrite: (bytes: Buffer) => written.then(() => bytes.length),
+    };
+  };
+
   it("reports a delivered write before an exited job releases the stream", async () => {
     vi.useFakeTimers();
     try {
-      let deliver: ((written: number) => void) | undefined;
-      const written = new Promise<number>((resolve) => {
-        deliver = resolve;
-      });
+      const write = deferredWrite();
       const { native, calls } = authority({
         polls: [{ ...settledPoll }],
-        stdinWrite: (bytes) => written.then(() => bytes.length),
+        stdinWrite: write.stdinWrite,
       });
       const child = launchWithInput(native);
       const failures: string[] = [];
@@ -293,7 +303,7 @@ describe("Windows owned process input", () => {
         false,
       );
 
-      deliver?.(4);
+      write.deliver(4);
       await delivered;
       await vi.advanceTimersByTimeAsync(25);
       expect(failures).toEqual([]);
@@ -308,15 +318,12 @@ describe("Windows owned process input", () => {
   it("reports a deferred release failure instead of rejecting the host", async () => {
     vi.useFakeTimers();
     try {
-      let deliver: ((written: number) => void) | undefined;
-      const written = new Promise<number>((resolve) => {
-        deliver = resolve;
-      });
+      const write = deferredWrite();
       let shouldFailClose = true;
       const { native, calls } = authority({
         polls: [{ ...settledPoll }, { ...settledPoll }],
         failClose: () => shouldFailClose,
-        stdinWrite: (bytes) => written.then(() => bytes.length),
+        stdinWrite: write.stdinWrite,
       });
       const child = launchWithInput(native);
       const failures: string[] = [];
@@ -327,7 +334,7 @@ describe("Windows owned process input", () => {
       });
 
       await vi.advanceTimersByTimeAsync(25);
-      deliver?.(4);
+      write.deliver(4);
       await delivered;
       await vi.advanceTimersByTimeAsync(25);
 

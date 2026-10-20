@@ -17,6 +17,7 @@ import {
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
+import { awaitPredecessor } from "../application/awaitPredecessor.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
@@ -544,20 +545,7 @@ export class AdbUiRunner {
       release = resolve;
     });
     try {
-      await new Promise<void>((resolve, reject) => {
-        const abort = () =>
-          reject(
-            new AnalysisCancelledError(request.operation, {
-              cause: signal?.reason,
-            }),
-          );
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) abort();
-        void predecessor.then(() => {
-          signal?.removeEventListener("abort", abort);
-          resolve();
-        });
-      });
+      await awaitPredecessor(predecessor, request.operation, signal);
     } catch (cause) {
       void predecessor.then(release);
       return err(

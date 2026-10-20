@@ -1,3 +1,4 @@
+import { registerNativeFunctionMatchingCommands } from "./cli/nativeFunctionMatchingCommands.js";
 import { registerCaptureCommands } from "./cli/captureCommands.js";
 import { registerSignalCommands } from "./cli/signalCommands.js";
 import { registerWasmCommands } from "./cli/wasmCommands.js";
@@ -6,6 +7,8 @@ import { createDirectAnalysis } from "./composition/directAnalysis.js";
 import { registerEvmCommands } from "./cli/evmCommands.js";
 import { registerDesktopApplicationCommands } from "./cli/desktopApplicationCommands.js";
 import { registerGoCommands } from "./cli/goCommands.js";
+import { registerModelCommands } from "./cli/modelCommands.js";
+import { registerIl2cppCommands } from "./cli/il2cppCommands.js";
 import { registerRustCommands } from "./cli/rustCommands.js";
 import { registerSqliteCommands } from "./cli/sqliteCommands.js";
 import { registerAnalysisViewCommands } from "./cli/analysisViewCommands.js";
@@ -119,6 +122,8 @@ export const createCli = (
   registerEvmCommands(cli, logger, environment);
   registerDesktopApplicationCommands(cli, logger);
   registerGoCommands(cli, logger);
+  registerIl2cppCommands(cli, logger);
+  registerModelCommands(cli, logger);
   registerRustCommands(cli, logger);
   registerSqliteCommands(cli, logger, environment);
   registerArtifactCommands(cli, logger, analysis.runProviderAnalysis);
@@ -132,6 +137,7 @@ export const createCli = (
   registerFirmwareCommands(cli, logger, environment);
   registerBinaryDiagnosticsCommands(cli, logger, environment);
   registerAnalysisViewCommands(cli, logger);
+  registerNativeFunctionMatchingCommands(cli, logger);
   registerFridaCommands(cli, logger, fridaInstrumentation);
   registerEvidenceCommands(cli, logger);
   registerEnvironmentCommands(cli, logger, environment);

@@ -225,8 +225,16 @@ const collectOwnedCommand = async (
     throwCommandPreparationFailure(cause, signal, deadline.interruption);
   }
   let exceeded = false;
+  let outputLimitObservedBeforeInterruption = false;
   let processFailure: string | undefined;
   let processError: Error | undefined;
+  let processFailureBeforeInterruption:
+    | {
+        readonly message: string;
+        readonly processError: Error | undefined;
+        readonly collectionFailure: boolean;
+      }
+    | undefined;
   const supervisor = new ProviderProcessSupervisor(
     {
       ...launched,
@@ -239,11 +247,37 @@ const collectOwnedCommand = async (
       captureStdout: limits.stdout === undefined,
       maxDiagnosticBytes: limits.diagnosticBytes,
       onDiagnostic: (event) => {
-        if (event.type === "output" && event.truncated === true)
+        if (event.type === "output" && event.truncated === true) {
           exceeded = true;
+          if (deadline.interruption === undefined)
+            outputLimitObservedBeforeInterruption = true;
+        }
         if (event.type === "error") {
           processFailure ??= event.message;
           processError ??= event.cause;
+          if (deadline.interruption === undefined)
+            processFailureBeforeInterruption ??= {
+              message: processFailure,
+              processError,
+              collectionFailure: true,
+            };
+        }
+        if (event.type === "exit" && deadline.interruption === undefined) {
+          const acceptedNonzeroExit =
+            limits.acceptNonZeroExit === true &&
+            event.code !== null &&
+            event.code !== 0 &&
+            event.signal === null;
+          if (
+            event.signal !== null ||
+            (event.code !== null && event.code !== 0 && !acceptedNonzeroExit)
+          )
+            processFailureBeforeInterruption ??= {
+              message:
+                "Command failed; inspect its exit status and diagnostics.",
+              processError: undefined,
+              collectionFailure: false,
+            };
         }
       },
     },
@@ -257,10 +291,61 @@ const collectOwnedCommand = async (
   );
   void consumed.then((failed) => {
     processFailure ??= failed;
+    if (failed !== undefined && deadline.interruption === undefined)
+      processFailureBeforeInterruption ??= {
+        message: processFailure ?? failed,
+        processError,
+        collectionFailure: true,
+      };
   });
   let failure: OwnedCommandFailure | undefined;
   let inputPending = false;
   let inputFailure: Error | undefined;
+  let inputFailureBeforeInterruption: Error | undefined;
+  const throwInterruptionOrObservedFailure = (
+    interruption: "cancelled" | "timeout" | undefined,
+    snapshot: ProviderProcessSnapshot | null = null,
+  ): void => {
+    if (interruption === undefined) return;
+    if (outputLimitObservedBeforeInterruption)
+      throw new OwnedCommandFailure(
+        "output-limit",
+        "Command diagnostic output exceeded its complete-output budget.",
+        snapshot,
+      );
+    if (processFailureBeforeInterruption !== undefined)
+      throw new OwnedCommandFailure(
+        "process",
+        processFailureBeforeInterruption.message,
+        snapshot,
+        null,
+        {
+          processError: processFailureBeforeInterruption.processError,
+          collectionFailure: processFailureBeforeInterruption.collectionFailure,
+        },
+      );
+    // A stdin write that failed before the interruption is the command's own
+    // outcome and must not be replaced by the interruption.
+    if (inputFailureBeforeInterruption !== undefined)
+      throw new OwnedCommandFailure(
+        "process",
+        "Command stdin write failed.",
+        snapshot,
+        null,
+        { cause: inputFailureBeforeInterruption, collectionFailure: true },
+      );
+    throw new OwnedCommandFailure(
+      interruption,
+      interruption === "cancelled"
+        ? "Command cancelled."
+        : "Command deadline elapsed.",
+      snapshot,
+      null,
+      interruption === "cancelled"
+        ? { cancellation: { reason: signal.reason } }
+        : undefined,
+    );
+  };
   try {
     if (input !== undefined) {
       const stream = launched.process.stdin;
@@ -270,6 +355,8 @@ const collectOwnedCommand = async (
       const failed = (cause: Error) => {
         inputFailure = cause;
         inputPending = false;
+        if (deadline.interruption === undefined)
+          inputFailureBeforeInterruption = cause;
       };
       stream.on("error", failed);
       stream.once("close", () => {
@@ -282,19 +369,7 @@ const collectOwnedCommand = async (
       });
     }
     while (inputPending || !(await supervisor.waitForOutputClose(10))) {
-      const interruption = deadline.interruption;
-      if (interruption !== undefined)
-        throw new OwnedCommandFailure(
-          interruption,
-          interruption === "cancelled"
-            ? "Command cancelled."
-            : "Command deadline elapsed.",
-          null,
-          null,
-          interruption === "cancelled"
-            ? { cancellation: { reason: signal.reason } }
-            : undefined,
-        );
+      throwInterruptionOrObservedFailure(deadline.interruption);
       if (exceeded)
         throw new OwnedCommandFailure(
           "output-limit",
@@ -319,24 +394,20 @@ const collectOwnedCommand = async (
     const sinkFailure = await waitForAbortable(consumed, signal);
     if (sinkFailure !== ABORTED) processFailure ??= sinkFailure;
     const snapshot = supervisor.snapshot();
-    const interruption = deadline.interruption;
-    if (interruption !== undefined)
-      throw new OwnedCommandFailure(
-        interruption,
-        interruption === "cancelled"
-          ? "Command cancelled."
-          : "Command deadline elapsed.",
-        snapshot,
-        null,
-        interruption === "cancelled"
-          ? { cancellation: { reason: signal.reason } }
-          : undefined,
-      );
+    throwInterruptionOrObservedFailure(deadline.interruption, snapshot);
     if (exceeded)
       throw new OwnedCommandFailure(
         "output-limit",
         "Command diagnostic output exceeded its complete-output budget.",
         snapshot,
+      );
+    if (inputFailure !== undefined)
+      throw new OwnedCommandFailure(
+        "process",
+        "Command stdin write failed.",
+        snapshot,
+        null,
+        { cause: inputFailure, collectionFailure: true },
       );
     const acceptedNonzeroExit =
       limits.acceptNonZeroExit === true &&
@@ -346,25 +417,16 @@ const collectOwnedCommand = async (
       snapshot.signal === null;
     if (
       processFailure !== undefined ||
-      inputFailure !== undefined ||
       ((snapshot.exitCode !== 0 || snapshot.signal !== null) &&
         !acceptedNonzeroExit)
     )
       throw new OwnedCommandFailure(
         "process",
         processFailure ??
-          (inputFailure === undefined
-            ? undefined
-            : "Command stdin write failed.") ??
           "Command failed; inspect its exit status and diagnostics.",
         snapshot,
         null,
-        {
-          processError,
-          collectionFailure:
-            processFailure !== undefined || inputFailure !== undefined,
-          ...(inputFailure === undefined ? {} : { cause: inputFailure }),
-        },
+        { processError, collectionFailure: processFailure !== undefined },
       );
     limits.observeCompleted?.(snapshot);
   } catch (cause: unknown) {
@@ -381,7 +443,6 @@ const collectOwnedCommand = async (
   }
   // A finished sink ignores this; an unfinished one is destroyed.
   abandoned.abort();
-  if (input !== undefined) launched.process.stdin?.destroy();
   const stopped = await supervisor.stop();
   const snapshot = supervisor.snapshot();
   const cancellation =

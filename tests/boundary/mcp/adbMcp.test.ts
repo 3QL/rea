@@ -402,10 +402,26 @@ it("rejects invalid tool input before reaching the provider", async () => {
     arguments: { serial: "bad serial" },
   });
   expect(rejected.isError).toBe(true);
-  const text = (rejected.content as { readonly text?: string }[])
-    .map((part) => part.text ?? "")
-    .join("");
-  expect(text).toContain("Invalid arguments for tool inspect_adb_device");
+  expect(parseMcpToolError(rejected)).toMatchObject({
+    error: {
+      code: "invalid_request",
+      recovery: {
+        kind: "inspect_input_contract",
+        operation: "inspect_adb_device",
+      },
+      details: {
+        operation: "inspect_adb_device",
+        issues: [
+          {
+            path: [],
+            reason: "invalid_value",
+            message:
+              "serial: Device serial cannot contain whitespace or quotes",
+          },
+        ],
+      },
+    },
+  });
 });
 
 it("exports recovered UI action Evidence recorded from a failed action", async () => {

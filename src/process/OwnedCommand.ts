@@ -351,6 +351,9 @@ const collectOwnedCommand = async (
       const stream = launched.process.stdin;
       if (stream === null || stream === undefined)
         throw new Error("Owned process did not supply piped stdin");
+      // A launch that used up the host deadline must not deliver the body: the
+      // target would start its own deadline and act after the caller gave up.
+      throwInterruptionOrObservedFailure(deadline.interruption);
       inputPending = true;
       const failed = (cause: Error) => {
         inputFailure = cause;

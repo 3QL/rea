@@ -2,6 +2,10 @@ import { DarwinProcessOwnershipInspectionError } from "../../../src/process/Darw
 import { ProviderCleanupError } from "../../../src/domain/providerCleanupError.js";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { beforeAll, expect, it, vi } from "vitest";
@@ -636,6 +640,51 @@ it("reports an early stdin close without losing the child's diagnostics", async 
     collectionFailure: true,
     snapshot: { stdout: { text: "input refused" } },
   });
+});
+
+it("does not deliver input after the command deadline elapses", async () => {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdin = new PassThrough();
+  const written: string[] = [];
+  stdin.on("data", (chunk: Buffer | string) => written.push(String(chunk)));
+  class FakeProcess extends EventEmitter {
+    readonly stdout = stdout;
+    readonly stderr = stderr;
+    readonly stdin = stdin;
+    exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
+    readonly pid = 41240;
+    kill(): boolean {
+      return true;
+    }
+  }
+  const child = new FakeProcess();
+  const request = command("unused fake launcher command");
+  const failure = runOwnedCommand(
+    { ...request, stdin: "pipe" },
+    { timeoutMs: 20, diagnosticBytes: 1024 },
+    {
+      input: "late body\n",
+      launcher: async () => {
+        // The host deadline passes while the process is being acquired.
+        await delay(60);
+        return {
+          process: child,
+          ownership: {
+            runId: request.runId,
+            leaderPid: child.pid,
+            processGroupId: child.pid,
+          },
+          cleanup: async () => ({ cleaned: true as const, signaled: false }),
+        };
+      },
+    },
+  );
+  await expect(failure).rejects.toMatchObject({ reason: "timeout" });
+  // A body delivered after the deadline would let the target act on its own
+  // fresh deadline, long after the caller gave up.
+  expect(written).toEqual([]);
 });
 
 it("cancels an input write blocked by a non-reading child and releases the process", async () => {

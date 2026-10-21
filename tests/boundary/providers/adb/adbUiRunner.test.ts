@@ -826,6 +826,70 @@ it("releases a request whose completion the runner could not transport", async (
   await provider.close();
 });
 
+it("requires a fresh UI observation before replaying an untransported action", async () => {
+  const state = await fixture({ status_offline: true, cancel_capacity: true });
+  onTestFinished(async () => {
+    await state.setMode({});
+    await state.provider.close();
+  });
+  const first = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (first.ok) throw new Error("Expected the lost status failure");
+  expect(first.error.userMessage).toContain("may have completed");
+  expect(first.error.diagnostics).toMatchObject({
+    action_outcome: "unknown",
+    replay_safe: false,
+  });
+
+  await state.setMode({});
+  const otherTargetInspection = await state.service.execute("inspect_adb_ui", {
+    ...scope,
+    serial: "emulator-5556",
+  });
+  expect(otherTargetInspection.ok).toBe(true);
+  const retry = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (retry.ok) throw new Error("Expected unresolved outcome refusal");
+  if (!(retry.error instanceof AnalysisOutputError))
+    throw new Error("Expected typed unresolved outcome refusal");
+  expect(retry.error.userMessage).toContain("may have completed");
+  expect(retry.error.remediationAction).toContain("inspect_adb_ui");
+  expect(retry.error.diagnostics).toMatchObject({
+    prior_action_outcome: "unknown",
+    current_request_dispatched: false,
+  });
+  const afterRefusal = (await readFile(state.workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    afterRefusal.filter((call) => call.operation === "perform_adb_ui_action"),
+  ).toHaveLength(1);
+
+  const inspection = await state.service.execute("inspect_adb_ui", scope);
+  expect(inspection.ok).toBe(true);
+  const next = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  expect(next.ok).toBe(true);
+  const afterInspection = (
+    await readFile(state.workspace.path("calls"), "utf8")
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    afterInspection.filter(
+      (call) => call.operation === "perform_adb_ui_action",
+    ),
+  ).toHaveLength(2);
+});
+
 it("retains a refusal recovered while cleaning up the interrupted request", async () => {
   const state = await fixture({
     action_refusal: true,

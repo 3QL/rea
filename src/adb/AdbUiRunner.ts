@@ -85,6 +85,9 @@ type ReplyFailure = {
 interface RemoteRequest {
   readonly binary: string;
   readonly serial: string;
+  readonly targetPackage: string;
+  readonly displayId: number;
+  readonly windowId: number | undefined;
   readonly packageName: string;
   readonly instanceId: string;
   readonly requestId: string;
@@ -106,6 +109,10 @@ interface RemoteRequest {
 interface RecoveredActionOutcome {
   readonly requestId: string;
   readonly operation: string;
+  readonly serial: string;
+  readonly targetPackage: string;
+  readonly displayId: number;
+  readonly windowId: number | undefined;
   readonly evidence?: Evidence;
 }
 
@@ -157,6 +164,7 @@ export class AdbUiRunner {
   readonly #commands = new Map<ProviderProcessSupervisor, string>();
   readonly #cleanupErrors = new Set<WeakRef<AnalysisError>>();
   #cleanup: Promise<readonly RecoveredActionOutcome[]> | undefined;
+  #unknownActionOutcome: RecoveredActionOutcome | undefined;
   #tail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -423,9 +431,13 @@ export class AdbUiRunner {
     const recovered = await this.#retryCleanup();
     if (signal?.aborted)
       throw new AnalysisCancelledError(operation, { cause: signal.reason });
-    const action = recovered.find(
-      ({ operation: prior }) => prior === "perform_adb_ui_action",
-    );
+    const action =
+      operation === "perform_adb_ui_action"
+        ? (this.#unknownActionOutcome ??
+          recovered.find(
+            ({ operation: prior }) => prior === "perform_adb_ui_action",
+          ))
+        : undefined;
     return action === undefined
       ? undefined
       : this.#recoveredActionError(operation, action);
@@ -437,16 +449,26 @@ export class AdbUiRunner {
   ): AnalysisOutputError {
     return new AnalysisOutputError(
       operation,
-      "A previous UI action was recovered before this request was sent",
+      recovered.evidence === undefined
+        ? "A previous UI action has no confirmed outcome"
+        : "A previous UI action was recovered before this request was sent",
       {
         userMessage:
           "A previous UI action may have completed. This request was not sent.",
         remediationAction:
           recovered.evidence === undefined
-            ? "Inspect the current UI state before deciding whether to send the intended action again."
+            ? "Run inspect_adb_ui to check the current device state before deciding whether to send the intended action again."
             : "Review the recovered action Evidence and current UI state before deciding whether to send the intended action again.",
         diagnostics: {
           prior_request_id: recovered.requestId,
+          prior_target: {
+            serial: recovered.serial,
+            package: recovered.targetPackage,
+            display_id: recovered.displayId,
+            ...(recovered.windowId === undefined
+              ? {}
+              : { window_id: recovered.windowId }),
+          },
           prior_action_outcome:
             recovered.evidence === undefined ? "unknown" : "observed",
           current_request_dispatched: false,
@@ -501,11 +523,18 @@ export class AdbUiRunner {
             // completion. Releasing it keeps the runner's slot available; the
             // completion itself never reached the caller.
             request.settled = true;
-            if (request.actionSubmitted)
-              recovered.push({
+            if (request.actionSubmitted) {
+              const outcome = {
                 requestId: request.requestId,
                 operation: request.operation,
-              });
+                serial: request.serial,
+                targetPackage: request.targetPackage,
+                displayId: request.displayId,
+                windowId: request.windowId,
+              };
+              recovered.push(outcome);
+              this.#unknownActionOutcome = outcome;
+            }
             await this.#forget(request, signal);
             break;
           }
@@ -530,6 +559,10 @@ export class AdbUiRunner {
                 recovered.push({
                   requestId: request.requestId,
                   operation: request.operation,
+                  serial: request.serial,
+                  targetPackage: request.targetPackage,
+                  displayId: request.displayId,
+                  windowId: request.windowId,
                   ...(evidence === undefined ? {} : { evidence }),
                 });
             }
@@ -651,9 +684,13 @@ export class AdbUiRunner {
     let returned: AnalysisError | undefined;
     try {
       const recovered = await this.#retryCleanup();
-      const recoveredAction = recovered.find(
-        ({ operation }) => operation === "perform_adb_ui_action",
-      );
+      const recoveredAction =
+        request.operation === "perform_adb_ui_action"
+          ? (this.#unknownActionOutcome ??
+            recovered.find(
+              ({ operation }) => operation === "perform_adb_ui_action",
+            ))
+          : undefined;
       if (recoveredAction !== undefined)
         throw this.#recoveredActionError(request.operation, recoveredAction);
       if (signal?.aborted)
@@ -715,6 +752,9 @@ export class AdbUiRunner {
       owned = {
         binary: launch,
         serial,
+        targetPackage: request.input.package,
+        displayId: request.input.display_id,
+        windowId: request.input.window_id,
         packageName,
         instanceId: identity.instance_id,
         requestId: randomUUID(),
@@ -860,7 +900,23 @@ export class AdbUiRunner {
         throw new AnalysisCancelledError(request.operation, {
           cause: signal.reason,
         });
-      return ok(this.#execution(request, client, serial, observed, provider));
+      const execution = this.#execution(
+        request,
+        client,
+        serial,
+        observed,
+        provider,
+      );
+      if (
+        request.operation === "inspect_adb_ui" &&
+        this.#unknownActionOutcome !== undefined &&
+        request.input.serial === this.#unknownActionOutcome.serial &&
+        request.input.package === this.#unknownActionOutcome.targetPackage &&
+        request.input.display_id === this.#unknownActionOutcome.displayId &&
+        request.input.window_id === this.#unknownActionOutcome.windowId
+      )
+        this.#unknownActionOutcome = undefined;
+      return ok(execution);
     } catch (cause) {
       primary =
         signal?.aborted &&

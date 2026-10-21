@@ -153,10 +153,13 @@ describe("Windows native release retry", () => {
       );
 
       shouldFailClose = false;
+      const callsBeforeRetry = calls.length;
       const cleanup = child.cleanup();
-      await vi.advanceTimersByTimeAsync(25);
-      expect(await cleanup).toMatchObject({ cleaned: true });
+      expect(await cleanup).toMatchObject({ cleaned: true, signaled: false });
       await closed;
+      expect(
+        calls.slice(callsBeforeRetry).map(({ operation }) => operation),
+      ).toEqual(["process_close"]);
       expect(child.stdout.writableEnded).toBe(true);
       expect(child.stderr.writableEnded).toBe(true);
     } finally {
@@ -303,9 +306,19 @@ describe("Windows owned process input", () => {
         false,
       );
 
+      // Cleanup must join the same delivery wait, not schedule a second poll
+      // that tears down the streams before the write has reported.
+      const cleanup = child.cleanup();
+      await vi.advanceTimersByTimeAsync(25);
+      expect(
+        calls.filter(({ operation }) => operation === "process_poll"),
+      ).toHaveLength(1);
+      expect(child.stdin?.destroyed).toBe(false);
+
       write.deliver(4);
       await delivered;
       await vi.advanceTimersByTimeAsync(25);
+      expect(await cleanup).toMatchObject({ cleaned: true });
       expect(failures).toEqual([]);
       expect(calls.some(({ operation }) => operation === "process_close")).toBe(
         true,
@@ -344,10 +357,24 @@ describe("Windows owned process input", () => {
       expect(
         calls.filter(({ operation }) => operation === "process_close"),
       ).toHaveLength(1);
+      const callsBeforeRetry = calls.length;
+      expect(await child.cleanup()).toMatchObject({
+        cleaned: false,
+        reason: "native close failed",
+      });
+      expect(
+        calls.slice(callsBeforeRetry).map(({ operation }) => operation),
+      ).toEqual(["process_close"]);
+
       shouldFailClose = false;
-      const cleanup = child.cleanup();
-      await vi.advanceTimersByTimeAsync(25);
-      expect(await cleanup).toMatchObject({ cleaned: true });
+      const callsBeforeRecovery = calls.length;
+      expect(await child.cleanup()).toMatchObject({
+        cleaned: true,
+        signaled: false,
+      });
+      expect(
+        calls.slice(callsBeforeRecovery).map(({ operation }) => operation),
+      ).toEqual(["process_close"]);
     } finally {
       vi.useRealTimers();
     }

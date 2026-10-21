@@ -249,6 +249,7 @@ const results: Readonly<Record<string, unknown>> = {
       },
     ],
     exact_match: true,
+    unparsed_lines: [],
     coverage: "complete",
   },
   install_adb_package: {

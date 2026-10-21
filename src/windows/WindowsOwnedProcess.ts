@@ -68,6 +68,10 @@ export class WindowsOwnedProcess extends EventEmitter {
   readonly #settled: Promise<void>;
   #settle: (() => void) | undefined;
   #closed = false;
+  // Settlement was observed and stream teardown finished, but process_close
+  // has not released every native handle. Later cleanup retries that close
+  // alone; kill and poll still need the job or process handle.
+  #releasePending = false;
   #failure: string | undefined;
   #timer: NodeJS.Timeout | undefined;
   #blockedWake: NodeJS.Timeout | undefined;
@@ -80,6 +84,8 @@ export class WindowsOwnedProcess extends EventEmitter {
   #outputIncomplete = false;
   /** Native input write that has not reported its delivery yet. */
   #pendingWrite: Promise<void> | undefined;
+  /** One release owns the wait for an in-flight input delivery. */
+  #inputSettling = false;
 
   constructor(
     command: string,
@@ -263,6 +269,17 @@ export class WindowsOwnedProcess extends EventEmitter {
 
   async #stop(): Promise<ProcessCleanupResult> {
     if (this.#closed) return { cleaned: true, signaled: false };
+    if (this.#releasePending) {
+      try {
+        this.#release();
+        return { cleaned: true, signaled: false };
+      } catch (cause: unknown) {
+        return {
+          cleaned: false,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+    }
     let timer: NodeJS.Timeout | undefined;
     try {
       const signaled = this.kill();
@@ -295,6 +312,7 @@ export class WindowsOwnedProcess extends EventEmitter {
   #schedule(delay = 25): void {
     if (
       this.#closed ||
+      this.#inputSettling ||
       this.#timer !== undefined ||
       this.#blockedOutput.size > 0
     )
@@ -339,6 +357,14 @@ export class WindowsOwnedProcess extends EventEmitter {
   #poll(): void {
     this.#timer = undefined;
     if (this.#closed) return;
+    if (this.#releasePending) {
+      try {
+        this.#release();
+      } catch (cause: unknown) {
+        this.#reportLifecycleFailure(cause);
+      }
+      return;
+    }
     try {
       const observed: unknown = this.#authority.call("process_poll", [
         this.#handle,
@@ -383,7 +409,8 @@ export class WindowsOwnedProcess extends EventEmitter {
     // Native lifecycle failures belong to the error/cleanup channels, never
     // the captured stderr observation produced by the child itself.
     if (this.listenerCount("error") > 0) this.emit("error", failure);
-    // Retain the original job so explicit cleanup can retry its observation.
+    // Poll failures retain the job for observation. Once stream teardown has
+    // finished, a failed native close retains only that close for retry.
   }
 
   #writeOutput(stream: PassThrough, bytes: Buffer): void {
@@ -405,27 +432,31 @@ export class WindowsOwnedProcess extends EventEmitter {
   }
 
   #release(): void {
-    if (this.#closed) return;
+    if (this.#closed || this.#inputSettling) return;
     if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#timer = undefined;
     this.#clearBlockedWake();
     // A native write that is still in flight may already have delivered the
     // bytes. It reports before the stream is torn down, so a delivered input
     // is never reported as a failed write.
     const pending = this.#pendingWrite;
-    if (pending === undefined) {
+    if (this.#releasePending || pending === undefined) {
       this.#releaseStreams();
       return;
     }
-    this.#pendingWrite = undefined;
+    this.#inputSettling = true;
     const settled = pending.then(
       () => undefined,
       () => undefined,
     );
+    let timer: NodeJS.Timeout | undefined;
     const deadline = new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, INPUT_SETTLE_MS);
+      timer = setTimeout(resolve, INPUT_SETTLE_MS);
       timer.unref?.();
     });
     void Promise.race([settled, deadline]).then(() => {
+      if (timer !== undefined) clearTimeout(timer);
+      this.#inputSettling = false;
       try {
         this.#releaseStreams();
       } catch (cause: unknown) {
@@ -440,12 +471,15 @@ export class WindowsOwnedProcess extends EventEmitter {
   /** End the local streams and release the native handle exactly once. */
   #releaseStreams(): void {
     if (this.#closed) return;
-    this.stdin?.destroy();
-    if (!this.stdout.destroyed) this.stdout.end();
-    if (!this.stderr.destroyed) this.stderr.end();
-    // End local streams before releasing the native handle. If release fails,
-    // the retained job can be retried without leaving output streams open.
+    if (!this.#releasePending) {
+      this.stdin?.destroy();
+      if (!this.stdout.destroyed) this.stdout.end();
+      if (!this.stderr.destroyed) this.stderr.end();
+      this.#releasePending = true;
+    }
+    // Streams are already ended. A failed close retries this call alone.
     this.#authority.call("process_close", [this.#handle]);
+    this.#releasePending = false;
     this.#closed = true;
     this.#settle?.();
     this.emit("close", this.exitCode, null);

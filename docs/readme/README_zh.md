@@ -156,6 +156,7 @@ REA 需要 Node.js 22.x（>=22.19）、24.x（>=24.11）或 26+，以及 npm。�
 | 已保存的网络捕获      | 请求、响应、可访问的载荷和来源位置                            | HAR；原生 mitmproxy 捕获需要 Linux 上的 mitmdump；[捕获指南](../web-network-captures.md)                           |
 | 数据包捕获            | 端点、DNS、TLS SNI、协议分布和 HTTP 请求                      | 调用方提供的 tshark 和 capinfos；[pcap 指南](../pcap-analysis.md)                                                  |
 | .NET 程序集           | 元数据、CIL 指令、声明的原生依赖和构建对比                    | 静态检查；[托管代码指南](../managed-code-analysis.md)                                                              |
+| PyInstaller           | CArchive, PYZ, Python bytecode                                | Static inspection; [Python packaged applications](../python-packaged-applications.md)                              |
 | Android APK           | 清单声明、类、反编译的方法和引用                              | Linux/macOS/Windows x64 上的无界面 JADX 和完整 JDK；[Android 指南](../android-analysis.md)                         |
 | Android 设备          | 设备、软件包、进程、日志、转储、屏幕截图以及 APK/文件传输     | 调用方提供的 adb（模拟器或实体设备）；[ADB 指南](../adb-device-analysis.md)                                        |
 | Android 界面          | 查找文本和按钮、检查层级、点击、输入、滚动、拖动及等待        | 调用方启动的 UI Automator 2.4 运行器，通过 adb 通信；[界面指南](../adb-ui-automation.md)                           |
@@ -271,6 +272,7 @@ npx rea-agents@latest setup
 
 - [安装与设置](../installation.md)：智能体注册、提供方配置、更新和卸载。
 - [就绪检查与故障排查](../installation.md#check-readiness-for-your-task)：诊断特定智能体或分析引擎。
+- [CUDA / HIP](../gpu-code-objects.md)
 - [GGUF / safetensors](../model-artifacts.md)
 - [CLI 与 Evidence](../cli.md)：命令、提供方选择、快照、导入/导出和退出状态。
 - [MCP 契约](../mcp-contracts.md)和[智能体提示词](../mcp-prompts.md)：工具结果、会话和引导式调查。

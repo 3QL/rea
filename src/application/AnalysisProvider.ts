@@ -68,7 +68,11 @@ export interface AnalysisExecution {
    */
   readonly referencesTruncated?: boolean;
   readonly locations: readonly EvidenceLocation[];
-  readonly subject: EvidenceSubjectTarget | null;
+  /**
+   * Missing means the selected operation's default subject should be bound by
+   * its caller. Explicit null means the observation has no file subject.
+   */
+  readonly subject?: EvidenceSubjectTarget | null;
 }
 
 interface CreateAnalysisExecutionOptions {
@@ -79,7 +83,7 @@ interface CreateAnalysisExecutionOptions {
   readonly relationshipCoverage?: RelationshipCoverage;
   readonly referencesTruncated?: boolean;
   readonly locations?: readonly EvidenceLocation[];
-  readonly subject?: EvidenceSubjectTarget;
+  readonly subject?: EvidenceSubjectTarget | null;
 }
 
 /**
@@ -129,7 +133,7 @@ export function createAnalysisExecution(
       ? {}
       : { referencesTruncated: options.referencesTruncated }),
     locations: [...(options.locations ?? [])],
-    subject: options.subject ?? null,
+    ...(options.subject === undefined ? {} : { subject: options.subject }),
   };
 }
 
@@ -144,22 +148,28 @@ export const createAnalysisExecutionEvidence = (
   confidence: "observed" | "derived",
   authority?: Evidence["authority"],
 ): Evidence =>
-  createEvidence(execution.subject ?? undefined, execution.provider, {
-    operation,
-    parameters: jsonObjectSchema.parse(input),
-    result: execution.result,
-    rawResult: execution.rawResult,
-    limitations: execution.limitations,
-    ...(execution.analysisProfile === undefined
-      ? {}
-      : { analysisProfile: execution.analysisProfile }),
-    ...(execution.relationshipCoverage === undefined
-      ? {}
-      : { relationshipCoverage: execution.relationshipCoverage }),
-    locations: execution.locations,
-    confidence,
-    ...(authority === undefined ? {} : { authority }),
-  });
+  createEvidence(
+    execution.subject === undefined
+      ? undefined
+      : (execution.subject ?? undefined),
+    execution.provider,
+    {
+      operation,
+      parameters: jsonObjectSchema.parse(input),
+      result: execution.result,
+      rawResult: execution.rawResult,
+      limitations: execution.limitations,
+      ...(execution.analysisProfile === undefined
+        ? {}
+        : { analysisProfile: execution.analysisProfile }),
+      ...(execution.relationshipCoverage === undefined
+        ? {}
+        : { relationshipCoverage: execution.relationshipCoverage }),
+      locations: execution.locations,
+      confidence,
+      ...(authority === undefined ? {} : { authority }),
+    },
+  );
 
 /** Provider-neutral application capability for one analysis operation. */
 export interface AnalysisOperationPort {
@@ -208,6 +218,8 @@ export interface AnalysisClient extends AnalysisOperationPort {
   close(
     options?: Pick<ExecutionOptions, "progress"> & {
       readonly retainDocument?: boolean;
+      /** Report each owned cleanup failure as soon as its owner observes it. */
+      readonly onCleanupFailure?: (failure: AnalysisError) => void;
     },
   ): Promise<Result<null, AnalysisError>>;
 }

@@ -8,6 +8,7 @@ import {
   type ProviderIdentity,
 } from "../application/AnalysisProvider.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
+import type { Evidence } from "../domain/evidence.js";
 import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
@@ -91,6 +92,7 @@ interface RemoteRequest {
   readonly socketPath: string;
   settled?: boolean;
   completion?: Reply;
+  lateEvidenceRecorded?: boolean;
   /**
    * Attach a terminal reply recovered by a later cleanup retry to the outcome
    * this request already produced. The request owns the recovery until it is
@@ -158,6 +160,8 @@ export class AdbUiRunner {
     private readonly platform: NodeJS.Platform = process.platform,
     /** Test seam for Windows PATH lookup while running on another host. */
     private readonly windowsIsFile?: (path: string) => boolean,
+    /** Record a terminal outcome recovered after its original response was sent. */
+    private readonly onLateEvidence?: (evidence: Evidence) => void,
   ) {}
 
   /**
@@ -842,15 +846,29 @@ export class AdbUiRunner {
         observed,
         provider,
       );
-      (returned ?? primary).retainPartialObservation(
-        createAnalysisExecutionEvidence(
-          request.operation,
-          adbEvidenceParameters(request, recovered.result),
-          recovered,
-          "observed",
-          "controlled-replay",
-        ),
+      const evidence = createAnalysisExecutionEvidence(
+        request.operation,
+        adbEvidenceParameters(request, recovered.result),
+        recovered,
+        "observed",
+        "controlled-replay",
       );
+      (returned ?? primary).retainPartialObservation(evidence);
+      if (delivered && !owned.lateEvidenceRecorded) {
+        owned.lateEvidenceRecorded = true;
+        try {
+          this.onLateEvidence?.(evidence);
+        } catch (cause) {
+          (returned ?? primary).retainSecondaryFailure(
+            new AnalysisOutputError(
+              request.operation,
+              "Recovered UI Evidence could not be recorded after response delivery",
+              { cause },
+            ),
+            { late_evidence_recording_failed: true },
+          );
+        }
+      }
     };
     if (owned !== undefined) owned.recover = retainCompletion;
     const retainCompleted = (): void => {

@@ -71,7 +71,10 @@ const header = {
   limitations: [],
 };
 
-async function fixture(mode: Record<string, unknown> = {}) {
+async function fixture(
+  mode: Record<string, unknown> = {},
+  onLateUiEvidence?: (evidence: unknown) => void,
+) {
   const workspace = await createTestWorkspace("rea-ui-transport-");
   const config = workspace.path("mode.json");
   await writeFile(config, JSON.stringify(mode));
@@ -172,7 +175,10 @@ if (request.operation === 'ping') {
     ...workspace.environment,
     REA_ADB_PATH: binary,
   };
-  const provider = new AdbProvider({ environment });
+  const provider = new AdbProvider({
+    environment,
+    ...(onLateUiEvidence === undefined ? {} : { onLateUiEvidence }),
+  });
   const service = new AdbDeviceAnalysisService(provider);
   onTestFinished(async () => {
     await writeFile(config, "{}");
@@ -709,6 +715,31 @@ it.each([
       });
   },
 );
+
+it("records a terminal observation recovered after the original response", async () => {
+  const recorded: unknown[] = [];
+  const state = await fixture(
+    { status_offline: true, cancel_offline: true },
+    (evidence) => recorded.push(evidence),
+  );
+  const result = await runLostStatusAction(state);
+  expect(result.error.partialObservation).toBeUndefined();
+  expect(recorded).toEqual([]);
+
+  await state.setMode({});
+  await state.provider.close();
+
+  expect(recorded).toHaveLength(1);
+  expect(parseEvidence(recorded[0])).toMatchObject({
+    operation: "perform_adb_ui_action",
+    authority: "controlled-replay",
+    normalized_result: {
+      serial: scope.serial,
+      dispatch_attempted: true,
+      action_completed: true,
+    },
+  });
+});
 
 it("releases a request whose completion the runner could not transport", async () => {
   const { service, provider, workspace } = await fixture({

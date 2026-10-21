@@ -68,6 +68,7 @@ import {
 import { RegularFileOperationCancelled } from "../filesystem/RegularFile.js";
 import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import { createEvidence } from "../domain/evidence.js";
+import type { Evidence } from "../domain/evidence.js";
 import {
   PrivateRuntimeRoot,
   type PrivateRuntimeRootOptions,
@@ -676,6 +677,8 @@ const publishBugreport = async (
 
 export interface AdbProviderOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  /** Persist UI Evidence discovered by a cleanup retry after MCP delivery. */
+  readonly onLateUiEvidence?: (evidence: Evidence) => void;
   /** Override runtime-root creation at the provider's owned-resource boundary. */
   readonly createRuntimeRoot?: (
     options?: PrivateRuntimeRootOptions,
@@ -873,7 +876,13 @@ export class AdbProvider {
 
   constructor(options: AdbProviderOptions = {}) {
     this.environment = options.environment ?? process.env;
-    this.#ui = new AdbUiRunner(this.environment);
+    this.#ui = new AdbUiRunner(
+      this.environment,
+      undefined,
+      undefined,
+      undefined,
+      options.onLateUiEvidence,
+    );
     this.#uiCleanup = new AnalysisCleanupLease(() => this.#ui.close());
     this.#createRuntimeRoot =
       options.createRuntimeRoot ??

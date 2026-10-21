@@ -231,6 +231,7 @@ it.each([
     environment: {
       REA_ANALYSIS_PROVIDER: "auto",
       REA_GHIDRA_STARTUP_TIMEOUT_MS: "2700000",
+      REA_HOPPER_STARTUP_TIMEOUT_MS: "120000",
       REA_MCP_INPUT_SCHEMA_PROFILE: "full",
     },
     providerConfigured: false,
@@ -262,6 +263,7 @@ it.each([
         expect(initial.providerEnvironment).toMatchObject({
           REA_ANALYSIS_PROVIDER: "auto",
           REA_GHIDRA_STARTUP_TIMEOUT_MS: "2700000",
+          REA_HOPPER_STARTUP_TIMEOUT_MS: "120000",
           REA_MCP_INPUT_SCHEMA_PROFILE: "full",
         });
       }

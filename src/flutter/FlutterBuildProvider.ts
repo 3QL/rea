@@ -12,9 +12,13 @@ import type {
 } from "../application/AnalysisProvider.js";
 import {
   createAnalysisExecution,
+  createAnalysisExecutionEvidence,
   type AnalysisExecution,
 } from "../application/AnalysisProvider.js";
-import type { FlutterRequest } from "../domain/flutter/flutterBuildAnalysis.js";
+import {
+  MAX_FLUTTER_LIBRARY_PATH_BYTES,
+  type FlutterRequest,
+} from "../domain/flutter/flutterBuildAnalysis.js";
 import {
   AnalysisAccessDeniedError,
   AnalysisArtifactChangedError,
@@ -25,6 +29,7 @@ import {
 } from "../domain/analysisErrorCore.js";
 import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
+import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -70,7 +75,8 @@ const APK_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 // engine labels this keeps expanded result metadata below 512 KiB for ordinary
 // ABI names, independently of the archive's compressed-byte budget.
 const MAX_FLUTTER_ABIS = 32;
-const MAX_LIBRARY_PATH_BYTES = 1024;
+const flutterBudget = (allowance: string, kind: "parser" | "input") =>
+  fixedAllowanceOptions(allowance, kind);
 const MAX_POOL_URIS = 500;
 const MAX_POOL_TOKENS = 2_000;
 /** A complete AOT image carries exactly one VM and one isolate section. */
@@ -187,7 +193,10 @@ const mapInputFailure = (
       "memory",
       cause.message,
       { max_metadata_read_bytes: APK_METADATA_READ_MAX_BYTES },
-      { cause },
+      {
+        cause,
+        ...flutterBudget("The Flutter APK metadata read allowance", "parser"),
+      },
     );
   return new AnalysisInputError(operation, { cause }, [
     {
@@ -283,7 +292,7 @@ const collectFlutterLibraries = async (
       abis.add(match[1]!);
       if (
         abis.size > MAX_FLUTTER_ABIS ||
-        Buffer.byteLength(entry.path) > MAX_LIBRARY_PATH_BYTES
+        Buffer.byteLength(entry.path) > MAX_FLUTTER_LIBRARY_PATH_BYTES
       )
         throw new AnalysisResourceConstraintError(
           operation,
@@ -291,8 +300,9 @@ const collectFlutterLibraries = async (
           "Flutter library inventory exceeds the bounded ABI projection budget",
           {
             max_flutter_abis: MAX_FLUTTER_ABIS,
-            max_library_path_bytes: MAX_LIBRARY_PATH_BYTES,
+            max_library_path_bytes: MAX_FLUTTER_LIBRARY_PATH_BYTES,
           },
+          flutterBudget("The Flutter ABI inventory allowance", "parser"),
         );
       libraries.push({
         entry,
@@ -328,6 +338,7 @@ const checkApkSize = (operation: string, bytes: number): void => {
       "file-size",
       `The selected APK exceeds the ${String(APK_MAX_BYTES)}-byte snapshot budget`,
       { max_apk_bytes: APK_MAX_BYTES, observed_bytes: bytes },
+      flutterBudget("the Flutter APK snapshot allowance", "input"),
     );
 };
 
@@ -619,9 +630,23 @@ export class FlutterBuildProvider {
     } finally {
       if (snapshot !== undefined) await this.discardRoot(snapshot.root);
     }
+    // Cancellation observed after the awaited snapshot removal still keeps
+    // the completed facts, composed exactly as the uncancelled Evidence.
     if (signal?.aborted === true)
       return err(
-        new AnalysisCancelledError(request.operation, { cause: signal.reason }),
+        new AnalysisCancelledError(request.operation, {
+          cause: signal.reason,
+          ...(result.ok
+            ? {
+                partialObservation: createAnalysisExecutionEvidence(
+                  request.operation,
+                  request.input,
+                  result.value,
+                  "observed",
+                ),
+              }
+            : {}),
+        }),
       );
     return result;
   }
@@ -642,6 +667,7 @@ export class FlutterBuildProvider {
             "file-size",
             `${entry.path} exceeds the library read budget`,
             { max_library_bytes: LIBRARY_MAX_BYTES, entry_path: entry.path },
+            flutterBudget("the Flutter library read allowance", "input"),
           ),
         );
     }
@@ -662,6 +688,7 @@ export class FlutterBuildProvider {
             max_total_bytes: TOTAL_EXTRACTION_MAX_BYTES,
             declared_total: declaredTotal,
           },
+          flutterBudget("the Flutter cumulative extraction allowance", "input"),
         ),
       );
 
@@ -713,6 +740,7 @@ export class FlutterBuildProvider {
                 max_library_bytes: LIBRARY_MAX_BYTES,
                 entry_path: entry.path,
               },
+              flutterBudget("the Flutter library read allowance", "input"),
             ),
           );
         hash.update(view);
@@ -730,6 +758,10 @@ export class FlutterBuildProvider {
               "file-size",
               `cumulative library extraction across ${String(flutterEntries.length)} entries exceeds the ${String(TOTAL_EXTRACTION_MAX_BYTES)}-byte budget`,
               { max_total_bytes: TOTAL_EXTRACTION_MAX_BYTES },
+              flutterBudget(
+                "the Flutter cumulative extraction allowance",
+                "input",
+              ),
             ),
           );
       }
@@ -748,6 +780,10 @@ export class FlutterBuildProvider {
                 max_snapshot_hash_candidates: MAX_SNAPSHOT_HASH_CANDIDATES,
                 entry_path: entry.path,
               },
+              flutterBudget(
+                "The Flutter snapshot-hash candidate allowance",
+                "parser",
+              ),
             ),
           );
         facts.set(abi, {
@@ -948,6 +984,7 @@ export class FlutterBuildProvider {
           "file-size",
           `lib/${selected.abi}/libapp.so declares ${String(declared)} bytes, exceeding the ${String(LIBRARY_MAX_BYTES)}-byte read budget`,
           { max_library_bytes: LIBRARY_MAX_BYTES },
+          flutterBudget("the Flutter library read allowance", "input"),
         ),
       );
     const imagePath = join(snapshot.root, "libapp.so");
@@ -977,6 +1014,7 @@ export class FlutterBuildProvider {
               "file-size",
               `lib/${selected.abi}/libapp.so exceeds the ${String(LIBRARY_MAX_BYTES)}-byte read budget while streaming`,
               { max_library_bytes: LIBRARY_MAX_BYTES },
+              flutterBudget("the Flutter library read allowance", "input"),
             ),
           );
         imageHash.update(view);

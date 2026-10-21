@@ -32,10 +32,26 @@ export const inspectJebRegistration = (
           classification: "config_drift",
         },
       ];
+  const availabilityChecks: readonly DoctorProviderCheck[] =
+    valid && requestTimeout.ok
+      ? [
+          {
+            name: "availability",
+            ok: false,
+            code: "not_probed",
+            detail:
+              "JEB service availability is unverified: syntax-only inspection made no request. Compatibility and project binding are also unverified.",
+            remediation:
+              "Run rea inspect-jeb-client for a read-only service query, or use MCP binary_session to probe operation availability. This doctor check does not contact JEB.",
+            classification: "unknown",
+          },
+        ]
+      : [];
   return {
     id: "jeb",
     configured,
-    available: valid && requestTimeout.ok,
+    // Valid registration is not proof that a compatible service is running.
+    available: false,
     providerVersion: null,
     registrationEnvironment:
       valid && configured && value !== undefined
@@ -61,6 +77,7 @@ export const inspectJebRegistration = (
         classification: configured ? "config_drift" : "missing_analysis_engine",
       },
       ...timeoutChecks,
+      ...availabilityChecks,
     ],
   };
 };

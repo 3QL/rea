@@ -23,7 +23,9 @@ For setup registration, set `REA_JEB_MCP_URL` in the REA process environment
 before running `rea setup`. The approved setup plan preserves the exact selected
 URL after validating its syntax. That validation does not establish that the
 JEB service is reachable or that a project is open; use the existing
-`inspect-jeb-client` command for a read-only service query.
+`inspect-jeb-client` command for a read-only service query. A configured but
+unprobed JEB endpoint is not included in setup's ready-provider list; setup can
+still save its validated registration and show dedicated diagnostic guidance.
 
 MCP `binary_session` probes the live JEB service and its advertised tool catalog.
 Availability is reported per operation: a reachable headless client can support
@@ -94,4 +96,4 @@ Use a package version that actually includes this adapter; repository main can b
 {"name":"decompile_jeb_item","arguments":{"item_address":"0x1000","item_kind":"method"}}
 ```
 
-For guided registration, set `REA_JEB_MCP_URL` before `rea setup --client <client>`. Setup includes that endpoint reference in its reviewed plan and preserves it after approval. `rea doctor --provider jeb --json` validates the endpoint and any selected `REA_JEB_MCP_TIMEOUT_MS` without starting JEB and explicitly leaves engine availability and project binding for analysis.
+For guided registration, set `REA_JEB_MCP_URL` before `rea setup --client <client>`. Setup includes that endpoint reference in its reviewed plan and preserves it after approval. `rea doctor --provider jeb --json` validates the endpoint and any selected `REA_JEB_MCP_TIMEOUT_MS` without starting or contacting JEB. Even with valid configuration, it reports `available: false` and a `jeb-availability` check classified as `unknown`; the selected-provider readiness result is unhealthy because this inspection does not establish availability. This syntax-only doctor does not reuse a prior live probe or claim service availability, compatibility or project binding.

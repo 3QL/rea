@@ -252,7 +252,7 @@ const renderReadyCapabilities = (
     writeLine(line);
 };
 
-/** Pure capability summary; the binary `analyze` lane is separate from JEB's dedicated commands. */
+/** Ready capabilities and configured JEB diagnostics, without probing any provider. */
 export const describeReadyCapabilities = (
   result: SetupResult,
   readyClients: readonly string[],
@@ -263,6 +263,9 @@ export const describeReadyCapabilities = (
     BINARY_ANALYSIS_PROVIDER_IDS.has(id),
   );
   const jebReady = result.doctor.availableProviders.includes("jeb");
+  const jebConfigured = result.doctor.providerInspections?.some(
+    ({ id, configured }) => id === "jeb" && configured,
+  );
   return [
     "◆  What you can do now",
     ...(providers.length > 0
@@ -275,7 +278,11 @@ export const describeReadyCapabilities = (
       ? ["│  Guided reverse-engineering workflows: installed"]
       : []),
     `│  CLI: ${cli} ${binaryReady ? "analyze /path/to/app" : "capabilities"}`,
-    ...(jebReady ? [`│  JEB: ${cli} ${CLI_COMMANDS.inspectJebClient}`] : []),
+    ...(jebReady
+      ? [`│  JEB: ${cli} ${CLI_COMMANDS.inspectJebClient}`]
+      : jebConfigured
+        ? [`│  JEB diagnostics: ${cli} ${CLI_COMMANDS.inspectJebClient}`]
+        : []),
     ...(readyClients[0] === undefined
       ? []
       : [

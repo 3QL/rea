@@ -93,7 +93,7 @@ it("composes provider diagnostics from selected configuration rather than ambien
   expect(inspections?.find(({ id }) => id === "ghidra")?.configured).toBe(true);
   expect(inspections?.find(({ id }) => id === "jeb")).toMatchObject({
     configured: true,
-    available: true,
+    available: false,
   });
   expect(JSON.stringify(inspections)).toContain("/selected/ghidra");
   expect(JSON.stringify(inspections)).toContain("/selected/ida.json");

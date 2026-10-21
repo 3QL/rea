@@ -10,10 +10,19 @@ it("keeps the JEB endpoint for setup without launching the engine", () => {
   expect(inspection).toMatchObject({
     id: "jeb",
     configured: true,
-    available: true,
+    available: false,
     providerVersion: null,
   });
   expect(inspection.checks[0]?.detail).toContain("no JEB process was launched");
+  expect(inspection.checks[0]?.ok).toBe(true);
+  expect(inspection.checks).toContainEqual(
+    expect.objectContaining({
+      name: "availability",
+      ok: false,
+      code: "not_probed",
+      classification: "unknown",
+    }),
+  );
   expect(providerRegistrationEnvironment([inspection])).toEqual({
     REA_JEB_MCP_URL: DEFAULT_JEB_MCP_ENDPOINT,
   });
@@ -23,7 +32,7 @@ it("keeps the JEB endpoint for setup without launching the engine", () => {
     }),
   ).toMatchObject({
     configured: true,
-    available: true,
+    available: false,
     registrationEnvironment: {
       REA_JEB_MCP_URL: "http://127.0.0.1:9999/mcp",
     },

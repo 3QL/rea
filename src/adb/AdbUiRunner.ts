@@ -164,6 +164,8 @@ export class AdbUiRunner {
   readonly #commands = new Map<ProviderProcessSupervisor, string>();
   readonly #cleanupErrors = new Set<WeakRef<AnalysisError>>();
   #cleanup: Promise<readonly RecoveredActionOutcome[]> | undefined;
+  /** Outcomes survive remote forget/acknowledgement failures until reported to a caller. */
+  #recoveredActionOutcomes = new Map<string, RecoveredActionOutcome>();
   #unknownActionOutcome: RecoveredActionOutcome | undefined;
   #tail: Promise<void> = Promise.resolve();
 
@@ -323,7 +325,7 @@ export class AdbUiRunner {
           expectedCommand: null,
           hostEnvironment: this.environment,
           onLaunchState: (state) => {
-            if (submission === undefined) return;
+            if (submission === undefined || socketPath !== undefined) return;
             if (state === "attempting")
               this.#pending.set(submission.requestId, submission);
             else this.#pending.delete(submission.requestId);
@@ -332,6 +334,14 @@ export class AdbUiRunner {
         { timeoutMs, diagnosticBytes: CAPTURE_BYTES },
         {
           ...(signal === undefined ? {} : { signal }),
+          ...(submission === undefined || socketPath === undefined
+            ? {}
+            : {
+                onInputSubmission: () => {
+                  if (operation === "perform_adb_ui_action")
+                    submission.actionSubmitted = true;
+                },
+              }),
           retainCleanup: (owner) => {
             this.#commands.set(owner, runId);
           },
@@ -438,9 +448,15 @@ export class AdbUiRunner {
             ({ operation: prior }) => prior === "perform_adb_ui_action",
           ))
         : undefined;
-    return action === undefined
-      ? undefined
-      : this.#recoveredActionError(operation, action);
+    if (action === undefined) return undefined;
+    const error = this.#recoveredActionError(operation, action);
+    this.#recoveredActionOutcomes.delete(action.requestId);
+    return error;
+  }
+
+  #rememberRecoveredAction(outcome: RecoveredActionOutcome): void {
+    this.#recoveredActionOutcomes.set(outcome.requestId, outcome);
+    if (outcome.evidence === undefined) this.#unknownActionOutcome = outcome;
   }
 
   #recoveredActionError(
@@ -490,7 +506,6 @@ export class AdbUiRunner {
   async #close(): Promise<readonly RecoveredActionOutcome[]> {
     await this.#settleCommands();
     const failures = [];
-    const recovered: RecoveredActionOutcome[] = [];
     for (const request of this.#pending.values()) {
       try {
         const signal = AbortSignal.timeout(CLEANUP_MS);
@@ -524,7 +539,7 @@ export class AdbUiRunner {
             // completion itself never reached the caller.
             request.settled = true;
             if (request.actionSubmitted) {
-              const outcome = {
+              const outcome: RecoveredActionOutcome = {
                 requestId: request.requestId,
                 operation: request.operation,
                 serial: request.serial,
@@ -532,8 +547,7 @@ export class AdbUiRunner {
                 displayId: request.displayId,
                 windowId: request.windowId,
               };
-              recovered.push(outcome);
-              this.#unknownActionOutcome = outcome;
+              this.#rememberRecoveredAction(outcome);
             }
             await this.#forget(request, signal);
             break;
@@ -555,8 +569,8 @@ export class AdbUiRunner {
               // The originating outcome may already have been returned; it still
               // owns this request's recovery until the request is forgotten.
               const evidence = request.recover?.(result.response);
-              if (request.actionSubmitted && result.response.ok)
-                recovered.push({
+              if (request.actionSubmitted && result.response.ok) {
+                const outcome: RecoveredActionOutcome = {
                   requestId: request.requestId,
                   operation: request.operation,
                   serial: request.serial,
@@ -564,7 +578,9 @@ export class AdbUiRunner {
                   displayId: request.displayId,
                   windowId: request.windowId,
                   ...(evidence === undefined ? {} : { evidence }),
-                });
+                };
+                this.#rememberRecoveredAction(outcome);
+              }
             }
             await this.#forget(request, signal);
             break;
@@ -593,7 +609,7 @@ export class AdbUiRunner {
     for (const reference of this.#cleanupErrors)
       reference.deref()?.resolveCleanup();
     this.#cleanupErrors.clear();
-    return recovered;
+    return [...this.#recoveredActionOutcomes.values()];
   }
 
   #rememberCompletion(request: RemoteRequest, reply: Reply): void {
@@ -682,6 +698,8 @@ export class AdbUiRunner {
     // recovery attaches to whichever error this request actually produced.
     let delivered = false;
     let returned: AnalysisError | undefined;
+    let reportedRecoveredActionId: string | undefined;
+    let interruptedBeforeActionSubmission: AnalysisCancelledError | undefined;
     try {
       const recovered = await this.#retryCleanup();
       const recoveredAction =
@@ -691,8 +709,10 @@ export class AdbUiRunner {
               ({ operation }) => operation === "perform_adb_ui_action",
             ))
           : undefined;
-      if (recoveredAction !== undefined)
+      if (recoveredAction !== undefined) {
+        reportedRecoveredActionId = recoveredAction.requestId;
         throw this.#recoveredActionError(request.operation, recoveredAction);
+      }
       if (signal?.aborted)
         throw new AnalysisCancelledError(request.operation, {
           cause: signal.reason,
@@ -799,9 +819,6 @@ export class AdbUiRunner {
       if (!reply.ok) this.#pending.delete(owned.requestId);
       else {
         z.strictObject({ state: z.literal("prepared") }).parse(reply.result);
-        // Treat the input transport boundary as submission: once it starts, a
-        // lost acknowledgement cannot establish whether the device acted.
-        owned.actionSubmitted = request.operation === "perform_adb_ui_action";
         reply = await this.#send(
           launch,
           serial,
@@ -810,7 +827,7 @@ export class AdbUiRunner {
           payload,
           10000,
           signal,
-          undefined,
+          owned,
           owned.socketPath,
         );
       }
@@ -955,6 +972,8 @@ export class AdbUiRunner {
         },
       );
     }
+    if (primary instanceof AnalysisCancelledError)
+      interruptedBeforeActionSubmission = primary;
     // One recovery owner: a terminal reply discovered in this frame or by a later
     // cleanup retry is attached to the same outcome, whichever arrives first.
     // A recovered refusal is the runner's definitive answer, so it replaces a
@@ -962,6 +981,16 @@ export class AdbUiRunner {
     // secondary failure instead of being dropped with the request.
     const retainCompletion = (reply: Reply): Evidence | undefined => {
       if (owned === undefined) return undefined;
+      if (
+        !delivered &&
+        interruptedBeforeActionSubmission !== undefined &&
+        reply.error?.kind === "cancelled"
+      ) {
+        // The runner confirms it cancelled before admitting the action body.
+        // Preserve the caller's interruption instead of relabeling it unknown.
+        primary = interruptedBeforeActionSubmission;
+        return undefined;
+      }
       try {
         observed ??= this.#validateObservation(request, owned, reply, signal);
       } catch (cause) {
@@ -1035,6 +1064,8 @@ export class AdbUiRunner {
     retainCompleted();
     delivered = true;
     returned = primary;
+    if (reportedRecoveredActionId !== undefined)
+      this.#recoveredActionOutcomes.delete(reportedRecoveredActionId);
     return err(primary);
   }
 

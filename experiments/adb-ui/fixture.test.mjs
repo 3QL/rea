@@ -77,6 +77,7 @@ async function harness(t, settings = {}) {
                   },
                 ]
               : [],
+            unparsed_lines: [],
             exact_match: state.installed,
             coverage: "complete",
             ...settings.inventory?.(state),

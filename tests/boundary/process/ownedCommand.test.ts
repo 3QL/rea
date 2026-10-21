@@ -615,12 +615,19 @@ it("cancels a real acquired process and independently releases it", async () => 
 
 it("streams complete stdin while draining backpressured stdout", async () => {
   const input = "界\n".repeat(32 * 1024);
+  let submissions = 0;
   const result = await runOwnedCommand(
     { ...command("process.stdin.pipe(process.stdout)"), stdin: "pipe" },
     { timeoutMs: 5000, diagnosticBytes: Buffer.byteLength(input) + 1 },
-    { input },
+    {
+      input,
+      onInputSubmission: () => {
+        submissions += 1;
+      },
+    },
   );
   expect(result.stdout.text).toBe(input);
+  expect(submissions).toBe(1);
 });
 
 it("reports an early stdin close without losing the child's diagnostics", async () => {
@@ -661,11 +668,15 @@ it("does not deliver input after the command deadline elapses", async () => {
   }
   const child = new FakeProcess();
   const request = command("unused fake launcher command");
+  let submissions = 0;
   const failure = runOwnedCommand(
     { ...request, stdin: "pipe" },
     { timeoutMs: 20, diagnosticBytes: 1024 },
     {
       input: "late body\n",
+      onInputSubmission: () => {
+        submissions += 1;
+      },
       launcher: async () => {
         // The host deadline passes while the process is being acquired.
         await delay(60);
@@ -685,6 +696,7 @@ it("does not deliver input after the command deadline elapses", async () => {
   // A body delivered after the deadline would let the target act on its own
   // fresh deadline, long after the caller gave up.
   expect(written).toEqual([]);
+  expect(submissions).toBe(0);
 });
 
 it("cancels an input write blocked by a non-reading child and releases the process", async () => {

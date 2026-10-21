@@ -163,6 +163,8 @@ export const runOwnedCommand = async (
     readonly signal?: AbortSignal | undefined;
     /** Bounded caller-owned bytes/text delivered through piped stdin, never argv or diagnostics. */
     readonly input?: string | Uint8Array;
+    /** Synchronously record that the admitted input body is being handed to the child stdin. */
+    readonly onInputSubmission?: () => void;
     /** Synchronously accept unresolved cleanup ownership; execution still returns its original outcome. Must not throw. */
     readonly retainCleanup?: (
       owner: ProviderProcessSupervisor,
@@ -194,6 +196,7 @@ export const runOwnedCommand = async (
       callerSignal,
       options.retainCleanup,
       options.input,
+      options.onInputSubmission,
     );
   } finally {
     deadline.dispose();
@@ -213,6 +216,7 @@ const collectOwnedCommand = async (
     result: Extract<ProviderProcessStopResult, { status: "incomplete" }>,
   ) => void,
   input?: string | Uint8Array,
+  onInputSubmission?: () => void,
 ): Promise<ProviderProcessSnapshot> => {
   const signal = deadline.signal;
   let launched: SpawnedOwnedProviderProcess;
@@ -354,6 +358,7 @@ const collectOwnedCommand = async (
       // A launch that used up the host deadline must not deliver the body: the
       // target would start its own deadline and act after the caller gave up.
       throwInterruptionOrObservedFailure(deadline.interruption);
+      onInputSubmission?.();
       inputPending = true;
       const failed = (cause: Error) => {
         inputFailure = cause;

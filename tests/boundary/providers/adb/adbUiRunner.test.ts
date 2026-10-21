@@ -140,6 +140,12 @@ if (request.operation === 'ping') {
   reply({state:response===null?'missing':'settled',response});
 } else if (request.operation === 'forget') {
   if(mode.forget_offline) { console.error('device offline'); process.exit(1); }
+  if(mode.forget_offline_once && !fs.existsSync(path.join(root,'forget-ack-lost'))) {
+    fs.writeFileSync(path.join(root,'forget-ack-lost'),'forgotten');
+    fs.rmSync(jobFile(request.target_request_id),{force:true});
+    console.error('device offline after forgetting request');
+    process.exit(1);
+  }
   fs.rmSync(jobFile(request.target_request_id),{force:true}); reply({state:'forgotten'});
 } else if (request.operation === 'status') {
   if(mode.status_offline) { console.error('device offline'); process.exit(1); }
@@ -783,6 +789,127 @@ it("returns a recovered action before admitting a new UI action", async () => {
   expect(
     calls.filter((call) => call.operation === "perform_adb_ui_action"),
   ).toHaveLength(1);
+});
+
+it("retains a recovered action when the forget acknowledgement is lost", async () => {
+  const state = await fixture({
+    status_offline: true,
+    forget_offline_once: true,
+  });
+  onTestFinished(async () => {
+    await state.setMode({});
+    await state.provider.close();
+  });
+  const first = await runLostStatusAction(state);
+  expect(first.error.cleanupIncomplete).toBe(true);
+
+  await state.setMode({});
+  const retry = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (retry.ok) throw new Error("Expected recovered-outcome refusal");
+  expect(retry.error.userMessage).toContain(
+    "previous UI action may have completed",
+  );
+  expect(retry.error.diagnostics).toMatchObject({
+    prior_action_outcome: "observed",
+    current_request_dispatched: false,
+  });
+  expect(parseEvidence(retry.error.partialObservation)).toMatchObject({
+    normalized_result: { dispatch_attempted: true, action_completed: true },
+  });
+  const calls = (await readFile(state.workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    calls.filter((call) => call.operation === "perform_adb_ui_action"),
+  ).toHaveLength(1);
+});
+
+it("keeps recovered action warnings when cancellation follows successful reconciliation", async () => {
+  let abortDuringRecovery: (() => void) | undefined;
+  const state = await fixture(
+    { status_offline: true, cancel_offline: true },
+    () => abortDuringRecovery?.(),
+  );
+  onTestFinished(async () => {
+    abortDuringRecovery = undefined;
+    await state.setMode({});
+    await state.provider.close();
+  });
+  const first = await runLostStatusAction(state);
+  expect(first.error.cleanupIncomplete).toBe(true);
+
+  await state.setMode({});
+  const controller = new AbortController();
+  const reason = new Error("cancel after retained UI completion");
+  abortDuringRecovery = () => controller.abort(reason);
+  const cancelled = await state.service.execute("inspect_adb_ui", scope, {
+    signal: controller.signal,
+  });
+  if (cancelled.ok) throw new Error("Expected reconciliation cancellation");
+  expect(cancelled.error._tag).toBe("AnalysisCancelledError");
+  expect(cancelled.error.cause).toBe(reason);
+
+  abortDuringRecovery = undefined;
+  const retry = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (retry.ok) throw new Error("Expected recovered-outcome refusal");
+  expect(retry.error.userMessage).toContain(
+    "previous UI action may have completed",
+  );
+  const calls = (await readFile(state.workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    calls.filter((call) => call.operation === "perform_adb_ui_action"),
+  ).toHaveLength(1);
+});
+
+it("reports cancellation when the UI action input process never launches", async () => {
+  const { binary, environment, workspace } = await fixture();
+  const controller = new AbortController();
+  const reason = new Error("cancelled before private input launch");
+  const transport = new AdbUiRunner(environment, async (input) => {
+    if (input.stdin === "pipe") controller.abort(reason);
+    return spawnOwnedProviderProcess(input);
+  });
+  onTestFinished(() => transport.close());
+  const client = {
+    binary_path: binary,
+    path_source: "environment" as const,
+    version: "34.0.5-ui-fixture",
+    installed_path: binary,
+  };
+  const result = await transport.execute(
+    {
+      operation: "perform_adb_ui_action",
+      input: adbUiInputSchemas.perform_adb_ui_action.parse(actionInput),
+    },
+    binary,
+    client,
+    { id: "adb", name: "ADB fixture", version: client.version },
+    controller.signal,
+  );
+  if (result.ok) throw new Error("Expected cancellation before input launch");
+  expect(result.error._tag).toBe("AnalysisCancelledError");
+  expect(JSON.stringify(projectAnalysisError(result.error))).not.toContain(
+    "may have completed",
+  );
+  expect(result.error.cleanupIncomplete).toBe(false);
+  const calls = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(calls.some((call) => call.operation === "perform_adb_ui_action")).toBe(
+    false,
+  );
+  expect(calls.map((call) => call.operation)).toContain("cancel");
 });
 
 it("retains the runner request until late Evidence persistence succeeds", async () => {

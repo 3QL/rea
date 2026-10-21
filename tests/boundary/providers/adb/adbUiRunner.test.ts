@@ -741,6 +741,28 @@ it("records a terminal observation recovered after the original response", async
   });
 });
 
+it("retains the runner request until late Evidence persistence succeeds", async () => {
+  let attempts = 0;
+  const state = await fixture(
+    { status_offline: true, cancel_offline: true },
+    () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("session record unavailable");
+    },
+  );
+  const result = await runLostStatusAction(state);
+  expect(result.error.cleanupIncomplete).toBe(true);
+  await state.setMode({});
+
+  await expect(state.provider.close()).rejects.toMatchObject({
+    cleanupIncomplete: true,
+  });
+  expect(attempts).toBe(1);
+
+  await expect(state.provider.close()).resolves.toBeUndefined();
+  expect(attempts).toBe(2);
+});
+
 it("releases a request whose completion the runner could not transport", async () => {
   const { service, provider, workspace } = await fixture({
     status_offline: true,

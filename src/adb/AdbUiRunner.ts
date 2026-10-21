@@ -855,19 +855,10 @@ export class AdbUiRunner {
       );
       (returned ?? primary).retainPartialObservation(evidence);
       if (delivered && !owned.lateEvidenceRecorded) {
+        // If persistence throws, let cleanup retain this remote request. A
+        // later retry can deliver the same Evidence before releasing ownership.
+        this.onLateEvidence?.(evidence);
         owned.lateEvidenceRecorded = true;
-        try {
-          this.onLateEvidence?.(evidence);
-        } catch (cause) {
-          (returned ?? primary).retainSecondaryFailure(
-            new AnalysisOutputError(
-              request.operation,
-              "Recovered UI Evidence could not be recorded after response delivery",
-              { cause },
-            ),
-            { late_evidence_recording_failed: true },
-          );
-        }
       }
     };
     if (owned !== undefined) owned.recover = retainCompletion;

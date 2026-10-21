@@ -924,15 +924,18 @@ export class AdbUiRunner {
         observed,
         provider,
       );
+      const unknownAction = this.#unknownActionOutcome;
       if (
         request.operation === "inspect_adb_ui" &&
-        this.#unknownActionOutcome !== undefined &&
-        request.input.serial === this.#unknownActionOutcome.serial &&
-        request.input.package === this.#unknownActionOutcome.targetPackage &&
-        request.input.display_id === this.#unknownActionOutcome.displayId &&
-        request.input.window_id === this.#unknownActionOutcome.windowId
-      )
+        unknownAction !== undefined &&
+        request.input.serial === unknownAction.serial &&
+        request.input.package === unknownAction.targetPackage &&
+        request.input.display_id === unknownAction.displayId &&
+        request.input.window_id === unknownAction.windowId
+      ) {
         this.#unknownActionOutcome = undefined;
+        this.#recoveredActionOutcomes.delete(unknownAction.requestId);
+      }
       return ok(execution);
     } catch (cause) {
       primary =

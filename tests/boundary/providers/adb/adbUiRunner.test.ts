@@ -1017,6 +1017,37 @@ it("requires a fresh UI observation before replaying an untransported action", a
   ).toHaveLength(2);
 });
 
+it("clears the retained unknown outcome after a matching fresh inspection", async () => {
+  const state = await fixture({ status_offline: true, cancel_capacity: true });
+  onTestFinished(async () => {
+    await state.setMode({});
+    await state.provider.close();
+  });
+  const first = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (first.ok) throw new Error("Expected the lost status failure");
+  expect(first.error.userMessage).toContain("may have completed");
+
+  await state.setMode({});
+  const inspection = await state.service.execute("inspect_adb_ui", scope);
+  expect(inspection.ok).toBe(true);
+
+  const next = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  expect(next.ok).toBe(true);
+  const calls = (await readFile(state.workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    calls.filter((call) => call.operation === "perform_adb_ui_action"),
+  ).toHaveLength(2);
+});
+
 it("retains a refusal recovered while cleaning up the interrupted request", async () => {
   const state = await fixture({
     action_refusal: true,

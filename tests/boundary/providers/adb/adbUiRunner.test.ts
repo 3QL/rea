@@ -8,6 +8,7 @@ import {
 import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
 import { adbUiInputSchemas } from "../../../../src/domain/adb/adbUiAnalysis.js";
 import type { AnalysisError } from "../../../../src/domain/analysisErrorBase.js";
+import { AnalysisOutputError } from "../../../../src/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
 import { parseEvidence } from "../../../../src/domain/evidence.js";
 import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDeviceAnalysisService.js";
@@ -739,6 +740,49 @@ it("records a terminal observation recovered after the original response", async
       action_completed: true,
     },
   });
+});
+
+it("returns a recovered action before admitting a new UI action", async () => {
+  const state = await fixture({ status_offline: true, cancel_offline: true });
+  onTestFinished(async () => {
+    await state.setMode({});
+    await state.provider.close();
+  });
+  const first = await runLostStatusAction(state);
+  expect(first.error.cleanupIncomplete).toBe(true);
+
+  await state.setMode({});
+  const second = await state.service.execute(
+    "perform_adb_ui_action",
+    actionInput,
+  );
+  if (second.ok)
+    throw new Error("Expected recovered-outcome admission refusal");
+  if (!(second.error instanceof AnalysisOutputError))
+    throw new Error("Expected typed recovered-outcome refusal");
+  expect(second.error.userMessage).toContain("may have completed");
+  expect(second.error.remediationAction).toContain("recovered action Evidence");
+  expect(second.error.diagnostics).toMatchObject({
+    prior_request_id: expect.any(String),
+    prior_action_outcome: "observed",
+    current_request_dispatched: false,
+  });
+  expect(parseEvidence(second.error.partialObservation)).toMatchObject({
+    operation: "perform_adb_ui_action",
+    authority: "controlled-replay",
+    normalized_result: {
+      serial: scope.serial,
+      dispatch_attempted: true,
+      action_completed: true,
+    },
+  });
+  const calls = (await readFile(state.workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(
+    calls.filter((call) => call.operation === "perform_adb_ui_action"),
+  ).toHaveLength(1);
 });
 
 it("retains the runner request until late Evidence persistence succeeds", async () => {

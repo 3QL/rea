@@ -1299,7 +1299,11 @@ export class AdbProvider {
       try {
         // Retained UI work can still affect the device. Reconcile it before
         // any later operation, not only before another UI request or shutdown.
-        await this.#ui.reconcile(request.operation, options?.signal);
+        const recovered = await this.#ui.reconcile(
+          request.operation,
+          options?.signal,
+        );
+        if (recovered !== undefined) return err(recovered);
         await this.#resources.retryCleanup();
       } catch (cause: unknown) {
         if (cause instanceof AnalysisCancelledError && !cause.cleanupIncomplete)

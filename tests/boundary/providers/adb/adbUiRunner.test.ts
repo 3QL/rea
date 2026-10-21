@@ -12,6 +12,8 @@ import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjec
 import { parseEvidence } from "../../../../src/domain/evidence.js";
 import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDeviceAnalysisService.js";
 import { toolContract } from "../../../../src/contracts/toolContracts.js";
+import { createApplicationMcpHarness } from "../../../fixtures/applicationMcpHarness.js";
+import { parseMcpToolError } from "../../../fixtures/mcpToolError.js";
 import {
   createTestWorkspace,
   removeTestWorkspace,
@@ -84,6 +86,11 @@ if(args[0] === 'version') {
   console.log('Android Debug Bridge version 1.0.41\\nVersion 34.0.5-ui-fixture\\nInstalled as ' + __filename);
   process.exit(0);
 }
+if(JSON.stringify(args) === JSON.stringify(['-s','emulator-5554','shell','am','force-stop','com.example.app'])) {
+  fs.appendFileSync(path.join(root,'calls'),JSON.stringify({operation:'stop_adb_app',arguments:args})+'\\n');
+  if(fs.existsSync(path.join(root,'active'))) throw new Error('Non-UI dispatch raced an unsettled UI request');
+  process.exit(0);
+}
 const stream = args[2] === 'shell' && args[3] === '-T';
 if(stream) {
   if(args[0]!=='-s' || JSON.stringify(args.slice(3))!==JSON.stringify(['-T','run-as','dev.rea.uiautomator','--user','0','/system/bin/toybox','nc','-U','-w','5','-W','10','files/rea-ui-${instance}.sock'])) throw new Error('unmodeled private input command');
@@ -147,7 +154,8 @@ if (request.operation === 'ping') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
-  if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
+  if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'unsupported',reason:mode.unsupported_reason})));
+  else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
   else if(mode.kind==='hang') {
     fs.writeFileSync(path.join(root,'active'),request.request_id);
     fs.writeFileSync(jobFile(request.request_id),JSON.stringify({state:'running'}));
@@ -517,6 +525,153 @@ const actionInput = {
   element_id: "0",
   action: { kind: "tap" },
 } as const;
+
+it("reconciles retained UI work before non-UI dispatch on the same MCP connection", async () => {
+  const { provider, workspace, setMode } = await fixture({
+    kind: "hang",
+    status_offline: true,
+    cancel_offline: true,
+  });
+  const harness = await createApplicationMcpHarness({
+    serverOptions: { adbDeviceAnalysis: provider },
+  });
+  onTestFinished(async () => {
+    await setMode({});
+    await harness.close();
+  });
+  const interrupted = await harness.client.callTool({
+    name: "perform_adb_ui_action",
+    arguments: actionInput,
+  });
+  expect(parseMcpToolError(interrupted).error.code).toBe("cleanup_incomplete");
+  const activeId = await readFile(workspace.path("active"), "utf8");
+
+  const blocked = await harness.client.callTool({
+    name: "stop_adb_app",
+    arguments: scope,
+  });
+  expect(parseMcpToolError(blocked).error).toMatchObject({
+    code: "cleanup_incomplete",
+    details: { operation: "stop_adb_app" },
+  });
+  const retained = await provider.execute({
+    operation: "stop_adb_app",
+    input: scope,
+  });
+  if (retained.ok) throw new Error("Expected retained admission cleanup");
+  expect(retained.error.cleanupIncomplete).toBe(true);
+  expect(await readFile(workspace.path("active"), "utf8")).toBe(activeId);
+  expect(await readFile(workspace.path("calls"), "utf8")).not.toContain(
+    '"operation":"stop_adb_app"',
+  );
+
+  await setMode({});
+  const stopped = await harness.client.callTool({
+    name: "stop_adb_app",
+    arguments: scope,
+  });
+  expect(stopped.isError).not.toBe(true);
+  expect(retained.error.cleanupIncomplete).toBe(false);
+  await expect(readFile(workspace.path("active"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  await expect(
+    readFile(workspace.path(`job-${activeId}.json`)),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const calls = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(calls.at(-1).operation).toBe("stop_adb_app");
+  expect(calls.at(-2)).toMatchObject({ operation: "forget" });
+});
+
+it("cancels a non-UI admission wait without cancelling the active UI caller", async () => {
+  const { service, provider, workspace } = await fixture({ kind: "hang" });
+  const uiController = new AbortController();
+  const ui = service.execute(
+    "wait_for_adb_ui",
+    { ...scope, selector: {}, timeout_ms: 30000 },
+    { signal: uiController.signal },
+  );
+  try {
+    await expect
+      .poll(() => readFile(workspace.path("active"), "utf8"), {
+        timeout: 15_000,
+      })
+      .toMatch(/^[a-f0-9-]{36}$/u);
+    const controller = new AbortController();
+    const reason = new Error("cancel only the non-UI caller");
+    // This direct provider call enters the admission wait synchronously, while
+    // the existing public UI call still owns its running request.
+    const stop = provider.execute(
+      { operation: "stop_adb_app", input: scope },
+      { signal: controller.signal },
+    );
+    controller.abort(reason);
+    const result = await stop;
+    if (result.ok) throw new Error("Expected cancelled non-UI admission");
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe(reason);
+    expect(await readFile(workspace.path("active"), "utf8")).toMatch(
+      /^[a-f0-9-]{36}$/u,
+    );
+    expect(await readFile(workspace.path("calls"), "utf8")).not.toContain(
+      '"operation":"stop_adb_app"',
+    );
+  } finally {
+    uiController.abort();
+    await ui;
+  }
+});
+
+it.each([
+  {
+    operation: "inspect_adb_ui",
+    input: { ...scope, display_id: 1 },
+    reason: "Secondary display inspection requires Android 11",
+  },
+  {
+    operation: "perform_adb_ui_action",
+    input: {
+      ...scope,
+      display_id: 1,
+      snapshot_id: snapshotId,
+      action: { kind: "key_event", key_code: 4 },
+    },
+    reason: "UI Automator key events target the default display",
+  },
+])(
+  "classifies a definitive unsupported $operation reply through MCP",
+  async ({ operation, input, reason }) => {
+    const { provider } = await fixture({ unsupported_reason: reason });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+    });
+    onTestFinished(harness.close);
+    const reply = await harness.client.callTool({
+      name: operation,
+      arguments: input,
+    });
+    const { error } = parseMcpToolError(reply);
+    expect(error).toMatchObject({
+      code: "capability_unavailable",
+      category: "unsupported_provider",
+      retryable: false,
+      details: {
+        provider_id: "adb",
+        operation,
+        reason,
+        diagnostics: {
+          selected_scope: { ...scope, display_id: 1 },
+        },
+      },
+    });
+    expect(error.remediation.action).not.toContain(
+      "Inspect or find the current UI again",
+    );
+  },
+);
 
 it.each([
   ["a completed action", {}, expect.anything],

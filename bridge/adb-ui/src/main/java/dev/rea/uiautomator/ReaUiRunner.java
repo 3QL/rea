@@ -315,10 +315,7 @@ public final class ReaUiRunner extends Instrumentation {
       throw new Refusal("unsupported", "Secondary display inspection requires Android 11");
     Snapshot snapshot =
         new Snapshot(
-            packageName,
-            display,
-            input.has("window_id") ? input.getInt("window_id") : null,
-            device.getCurrentPackageName());
+            packageName, display, input.has("window_id") ? input.getInt("window_id") : null);
     try {
       ByWindowSelector selector = By.Window.pkg(packageName).displayId(display);
       if (input.has("window_id")) selector.id(input.getInt("window_id"));
@@ -346,35 +343,45 @@ public final class ReaUiRunner extends Instrumentation {
             continue;
           }
           try {
+            AccessibilityNodeInfo rootNode = root.getAccessibilityNodeInfo();
             Rect bounds = new Rect();
-            android.view.accessibility.AccessibilityWindowInfo info =
-                root.getAccessibilityNodeInfo().getWindow();
+            android.view.accessibility.AccessibilityWindowInfo info = rootNode.getWindow();
             if (info == null) {
               snapshot.gaps.put("A selected window became unavailable");
               continue;
             }
             try {
+              int windowDisplay = Build.VERSION.SDK_INT >= 30 ? info.getDisplayId() : 0;
+              if (windowDisplay != display
+                  || !packageName.equals(text(rootNode.getPackageName()))) {
+                snapshot.gaps.put("A selected window changed package or display");
+                continue;
+              }
               info.getBoundsInScreen(bounds);
+              int windowId = info.getId();
+              boolean active = info.isActive();
+              boolean focused = info.isFocused();
+              // Foreground provenance belongs to the selected windows, not the
+              // device-wide active root returned by getCurrentPackageName().
+              if (active || focused) snapshot.foregroundPackage = packageName;
+              snapshot.windows.put(
+                  object(
+                      "id",
+                      windowId,
+                      "display_id",
+                      windowDisplay,
+                      "active",
+                      active,
+                      "focused",
+                      focused,
+                      "bounds",
+                      bounds(bounds)));
+              budget += 512;
+              pending.addLast(
+                  new PendingNode(AccessibilityNodeInfo.obtain(rootNode), null, windowId));
             } finally {
               info.recycle();
             }
-            int windowId = window.getId();
-            snapshot.windows.put(
-                object(
-                    "id",
-                    windowId,
-                    "display_id",
-                    window.getDisplayId(),
-                    "active",
-                    window.isActive(),
-                    "focused",
-                    window.isFocused(),
-                    "bounds",
-                    bounds(bounds)));
-            budget += 512;
-            pending.addLast(
-                new PendingNode(
-                    AccessibilityNodeInfo.obtain(root.getAccessibilityNodeInfo()), null, windowId));
           } finally {
             root.recycle();
           }
@@ -545,9 +552,8 @@ public final class ReaUiRunner extends Instrumentation {
         kind.equals("key_event") ? null : snapshot.nodes.get(input.getString("element_id"));
     if (!kind.equals("key_event") && selected == null)
       throw new Refusal("stale_element", "Element does not belong to the selected snapshot");
-    requireForeground(snapshot);
     ValidatedNode selectedNode =
-        selected == null ? null : refreshNode(selected, NodeValidation.SNAPSHOT);
+        selected == null ? null : refreshNode(selected, snapshot, NodeValidation.SNAPSHOT);
     call.check();
     JSONObject before = snapshot.json(false);
     JSONObject selectedFacts = selected == null ? null : selected.facts;
@@ -569,8 +575,7 @@ public final class ReaUiRunner extends Instrumentation {
           attempted = true;
           selected.object.click();
           call.check();
-          requireForeground(snapshot);
-          refreshNode(selected, NodeValidation.CLICK_CONTINUATION);
+          refreshNode(selected, snapshot, NodeValidation.CLICK_CONTINUATION);
           call.check();
           selected.object.click();
           break;
@@ -621,7 +626,8 @@ public final class ReaUiRunner extends Instrumentation {
                 || destination.facts.getInt("window_id") != selected.facts.getInt("window_id"))
               throw new Refusal(
                   "stale_element", "Drag destination must belong to the same captured window");
-            ValidatedNode destinationState = refreshNode(destination, NodeValidation.SNAPSHOT);
+            ValidatedNode destinationState =
+                refreshNode(destination, snapshot, NodeValidation.SNAPSHOT);
             Rect bounds = destinationState.visibleBounds;
             Point center = new Point(bounds.centerX(), bounds.centerY());
             call.check();
@@ -715,18 +721,13 @@ public final class ReaUiRunner extends Instrumentation {
     }
   }
 
-  private void requireForeground(Snapshot snapshot) throws Refusal {
-    if (!snapshot.packageName.equals(device.getCurrentPackageName()))
-      throw new Refusal("focus_changed", "Expected package is not in the active window");
-  }
-
   private enum NodeValidation {
     SNAPSHOT,
     CLICK_CONTINUATION
   }
 
-  private static ValidatedNode refreshNode(Node selected, NodeValidation validation)
-      throws Exception {
+  private static ValidatedNode refreshNode(
+      Node selected, Snapshot snapshot, NodeValidation validation) throws Exception {
     // UI Automator 2.4.0 refreshes here and throws StaleObjectException if the
     // retained node cannot be refreshed. Keep freshness owned by that API.
     AccessibilityNodeInfo current = selected.object.getAccessibilityNodeInfo();
@@ -752,6 +753,8 @@ public final class ReaUiRunner extends Instrumentation {
     try {
       if (window == null || (!window.isActive() && !window.isFocused()))
         throw new Refusal("focus_changed", "Selected window is not active or focused");
+      if (Build.VERSION.SDK_INT >= 30 && window.getDisplayId() != snapshot.display)
+        throw new Refusal("stale_element", "Selected window moved to another display");
     } finally {
       if (window != null) window.recycle();
     }
@@ -1154,17 +1157,18 @@ public final class ReaUiRunner extends Instrumentation {
     final String packageName;
     final int display;
     final Integer windowFilter;
-    final String foregroundPackage;
+    // Null means no selected window was observed active or focused. It does
+    // not substitute a package observed on another display or outside the filter.
+    String foregroundPackage;
     final JSONArray windows = new JSONArray();
     final Gaps gaps = new Gaps();
     final LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
     int examined;
 
-    Snapshot(String packageName, int display, Integer windowFilter, String foregroundPackage) {
+    Snapshot(String packageName, int display, Integer windowFilter) {
       this.packageName = packageName;
       this.display = display;
       this.windowFilter = windowFilter;
-      this.foregroundPackage = foregroundPackage;
     }
 
     JSONObject json(boolean includeNodes) throws JSONException {

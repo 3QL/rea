@@ -400,8 +400,15 @@ export class AdbUiRunner {
 
   /** Host commands settle first so a late broadcast cannot outlive reconciliation. */
   async close(): Promise<void> {
-    await this.#tail;
+    await this.reconcile("close_binary");
+  }
+
+  /** Join earlier UI work and settle its retained owners before provider admission. */
+  async reconcile(operation: string, signal?: AbortSignal): Promise<void> {
+    await awaitPredecessor(this.#tail, operation, signal);
     await this.#retryCleanup();
+    if (signal?.aborted)
+      throw new AnalysisCancelledError(operation, { cause: signal.reason });
   }
 
   #retryCleanup(): Promise<void> {
@@ -902,6 +909,28 @@ export class AdbUiRunner {
           "capacity",
           failure.reason,
           null,
+        );
+      if (failure.kind === "unsupported")
+        throw new AnalysisCapabilityUnavailableError(
+          "adb",
+          request.operation,
+          failure.reason,
+          {
+            diagnostics: {
+              runner_failure: failure.kind,
+              runner_instance: owned.instanceId,
+              selected_scope: {
+                serial: request.input.serial,
+                package: request.input.package,
+                display_id: request.input.display_id,
+                ...(request.input.window_id === undefined
+                  ? {}
+                  : { window_id: request.input.window_id }),
+              },
+            },
+            remediationAction:
+              "Select a device and display supported by this operation: secondary-display inspection requires Android 11 or later, and key events require display 0.",
+          },
         );
       throw new AnalysisOutputError(request.operation, failure.kind, {
         userMessage: failure.reason,

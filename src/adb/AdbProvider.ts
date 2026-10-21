@@ -1288,14 +1288,21 @@ export class AdbProvider {
     this.#activeOperations.add(active);
     try {
       try {
+        // Retained UI work can still affect the device. Reconcile it before
+        // any later operation, not only before another UI request or shutdown.
+        await this.#ui.reconcile(request.operation, options?.signal);
         await this.#resources.retryCleanup();
       } catch (cause: unknown) {
+        if (cause instanceof AnalysisCancelledError && !cause.cleanupIncomplete)
+          return err(cause);
         const error = this.#cleanupError(
           request.operation,
           jsonObjectSchema.parse(request.input),
           [cause],
           this.#cleanupResources(cause, "ADB provider-owned resource"),
         );
+        if (cause instanceof AnalysisError && cause.cleanupIncomplete)
+          error.bindCleanupDependencies([cause]);
         const leases =
           cause instanceof ArtifactResourceRetryFailure
             ? cause.cleanupLeases

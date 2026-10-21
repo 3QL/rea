@@ -181,7 +181,9 @@ application state is left as-is.
   identities for later retry; another runner instance cannot prove old cleanup.
   Host launch preparation creates no remote owner. Once a request is prepared
   on the runner, a later stdin transport failure reconciles that reservation
-  before subsequent UI calls. A missing request after interrupted preparation is unresolved delivery, not
+  before subsequent ADB operations, including non-UI reads and app/package
+  mutations. Those calls join earlier UI work and remain blocked while its
+  cleanup is unresolved. A missing request after interrupted preparation is unresolved delivery, not
   proof of cancellation; cleanup retains it until delivery can be reconciled.
 - One-shot CLI close failures preserve the original operation error and any
   completed/partial observation, so an acknowledgement failure does not hide
@@ -219,6 +221,16 @@ Provider-boundary tests separately exercise malformed replies, request identity,
 unavailable runners, cancellation and acknowledgement/cleanup failure.
 
 The runner's source minimum is API 24; secondary-display inspection requires
-API 30. Real verification and platform-specific limitations are recorded in the
+API 30, and key events require display 0. A definitive runner `unsupported`
+refusal reports `capability_unavailable`, preserves the selected display and
+is not retryable without changing the device or operation scope. REA does not
+retry inspection or silently choose another display for that refusal.
+Real verification and platform-specific limitations are recorded in the
 experiment README. The protocol targets the user-0 runner; other Android-user
 configurations and host/platform combinations need their own verification.
+
+Foreground and action focus checks use the selected display/window scope.
+`foreground_package` is null when no selected window was observed active or
+focused; a package active on another display is not substituted. Element actions
+revalidate the selected node's window, display and active/focused state before
+dispatch, including between double-tap clicks. Key events remain display-0 only.

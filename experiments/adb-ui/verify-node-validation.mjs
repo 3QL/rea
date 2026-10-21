@@ -304,10 +304,17 @@ await withCommands((run, signal, settleCommands) =>
           if (facts.action_error.kind === "uiautomator_error")
             assert.equal(facts.action_error.reason, "StaleObjectException");
           else assert.equal(facts.action_error.kind, "focus_changed");
-          const foreground = facts.after?.foreground_package;
-          assert.equal(typeof foreground, "string");
-          assert(foreground.length > 0);
-          assert.notEqual(foreground, scope.package);
+          assert(
+            facts.after,
+            "App departure must retain its after-state capture",
+          );
+          assert.equal(facts.after.foreground_package, null);
+          assert(
+            facts.after.windows.every(
+              (window) => !window.active && !window.focused,
+            ),
+            "No selected window should remain active or focused after app departure",
+          );
           await retain("relaunch", await call("start_adb_app", scope));
         }
       }

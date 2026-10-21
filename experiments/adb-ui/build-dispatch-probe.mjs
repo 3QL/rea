@@ -22,23 +22,39 @@ const runner = join(
 );
 const original = await readFile(runner, "utf8");
 let source = original;
-const anchors = [
-  "refreshNode(destination, NodeValidation.SNAPSHOT);",
-  '"No captured window in the requested scope is still active or focused");',
+// Bind injection to each input's final cancellation checkpoint, not to the
+// signature or diagnostic text of an earlier preparation helper. Whitespace
+// changes are immaterial; missing or ambiguous dispatch guards still fail closed.
+const guards = [
+  {
+    action: "drag",
+    pattern:
+      /^([ \t]*)call\.check\(\);\s+attempted\s*=\s*true;\s+selected\.object\.drag\(center\);/gmu,
+  },
+  {
+    action: "key_event",
+    pattern:
+      /^([ \t]*)call\.check\(\);\s+attempted\s*=\s*true;\s+if\s*\(!device\.pressKeyCode\(/gmu,
+  },
 ];
-for (const anchor of anchors) {
+const anchors = [];
+for (const { action, pattern } of guards) {
+  const matches = [...source.matchAll(pattern)];
   assert.equal(
-    source.split(anchor).length,
-    2,
-    `Expected one preparation boundary: ${anchor}`,
+    matches.length,
+    1,
+    `Expected one final dispatch guard for ${action}`,
   );
-  source = source.replace(
-    anchor,
-    `${anchor}
-            // Verification-only state injection after the real preparation read.
-            if (input.getInt("timeout_ms") == 11001) call.cancelled = true;
-            if (input.getInt("timeout_ms") == 11002) call.deadline = 0;`,
-  );
+  const [match] = matches;
+  const [anchor, indent] = match;
+  anchors.push({ action, source: anchor });
+  source =
+    source.slice(0, match.index) +
+    `${indent}// Verification-only state injection after the real preparation reads.
+${indent}if (input.getInt("timeout_ms") == 11001) call.cancelled = true;
+${indent}if (input.getInt("timeout_ms") == 11002) call.deadline = 0;
+${anchor}` +
+    source.slice(match.index + anchor.length);
 }
 await writeFile(runner, source);
 const gradle = join(project, "build.gradle");

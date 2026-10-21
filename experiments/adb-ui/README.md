@@ -39,7 +39,9 @@ The same verifier checks double taps on a checkbox, a relabelled/selected contro
 and an initially unfocused text field, with independent click/touch counters.
 Stale initial selections must still be refused. A control that disables, moves,
 detaches or leaves its window after the first click must stop the second click
-and preserve its original selection and partial action outcome.
+and preserve its original selection and partial action outcome. App departure
+must retain an after-state capture with no selected active/focused window and
+`foreground_package: null`; another app's identity is outside that scope.
 
 ### Preparation-boundary cancellation
 
@@ -61,6 +63,9 @@ zero for interrupted requests; unchanged controls must deliver input. The source
 copy and hashes make this controlled state injection reproducible. Ordinary
 runner sources are untouched by the builder. Use a freshly built primary fixture
 containing the counters and restore the ordinary helper after verification.
+The builder identifies the final key/drag dispatch checkpoints independently of
+preparation-helper signatures and requires exactly one of each. A boundary test
+runs the builder against the current runner source to catch producer drift.
 
 ### Password description redaction
 

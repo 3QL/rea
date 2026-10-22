@@ -52,10 +52,16 @@ in the file the installed app reads:
   `%APPDATA%` file it still reads; with neither file, setup creates the
   private copy.
 - If `%LOCALAPPDATA%\Packages` holds a `Claude_<publisher ID>` package from
-  another publisher, or cannot be read, REA cannot establish which file Claude
+  another publisher, an `AnthropicPBC.Claude_<publisher ID>` package, or cannot
+  be read, REA cannot establish which file Claude
   Desktop reads. Setup, doctor and uninstall report that instead of falling
   back to `%APPDATA%`. Doctor then reports `claude_desktop` as invalid, and
   uninstall stops before removing anything for any client.
+  The reported `AnthropicPBC.Claude_fnn82j28hfe8t` build can use the `Claude-3p`
+  deployment directory. REA recognizes that package as an unresolved location;
+  it does not assume that it reads the legacy AppData file or automatically
+  register in `Claude-3p`. See [#4432](https://github.com/morluto/rea/issues/4432)
+  for the reported build and manual registration evidence.
 
 Quit Claude Desktop fully before approving setup; closing its window is not
 enough. A running Claude Desktop can rewrite its configuration from memory and
@@ -67,12 +73,17 @@ to rerun it.
 A process that the MSIX app started, such as a terminal in Claude Desktop's
 Code tab, sees the package's private files at their `%APPDATA%` paths even
 though it reports no package identity. Setup compares one of those files at
-both paths. When it finds that redirected view, the app is running, so setup
-and uninstall refuse to change Claude Desktop's configuration; rerun them from
-a terminal that Claude Desktop did not start. If the package has no private
-file to compare, setup and uninstall cannot rule that out and also refuse; open
-Claude Desktop once if it has never run, quit it fully, then rerun. Doctor
-reads the same file from either kind of process.
+both paths: first one from the package's private `Claude` folder, and when
+that folder has none (some installations keep writing the real
+`%APPDATA%\Claude`), one from the package's other private roaming folders,
+which the package redirects in the same way. When it finds that redirected
+view, the app is running, so setup and uninstall refuse to change Claude
+Desktop's configuration; rerun them from a terminal that Claude Desktop did not
+start. If the package keeps no private roaming file at all, setup and
+uninstall cannot rule that out and also refuse. With Claude Desktop fully
+quit, add REA's entry by hand to the file setup names, which is the one the
+app reads, or remove it from both the private copy and the `%APPDATA%` file.
+Doctor reads the same file from either kind of process.
 
 The same process also writes everything under `%APPDATA%` and
 `%LOCALAPPDATA%` into the package's private storage, where other apps never
@@ -140,8 +151,38 @@ profiles](mcp-contracts.md#output-schemas).
 Setup registers `rea` in `~/.kimi-code/mcp.json`, or
 `$KIMI_CODE_HOME/mcp.json` when set, while preserving unrelated settings and
 creating a `.rea.backup` before updating an existing file. Kimi Code infers
-stdio from the `command` entry, so setup does not add a `type` field. The
-registration includes `startupTimeoutMs = 30000` and `toolTimeoutMs = 120000`.
+stdio from the `command` entry, so setup does not add a `type` field. New
+registrations include `startupTimeoutMs = 30000` and a `toolTimeoutMs` derived
+from REA's known provider allowance plus 120 seconds of operation
+headroom. The default is 450000 ms, covering the default 330-second Ghidra
+startup; an explicit Ghidra startup timeout of 2700000 ms produces a 2820000 ms
+tool timeout. The startup allowance follows an explicitly selected Ghidra or
+Hopper provider, and otherwise uses the larger known Ghidra/Hopper deadline.
+An explicit `REA_JEB_MCP_TIMEOUT_MS` deadline, shared by catalog discovery and
+each tools/call, also contributes to that maximum. For `ida` or `auto` selection, a valid IDA registration's parsed
+`timeoutMs` also contributes to that maximum; its default is 300000 ms.
+Setup forwards these explicitly selected REA deadlines and the input schema
+profile into the registration; unrelated process values are omitted. An
+explicit `REA_JADX_OPERATION_TIMEOUT_MS` is forwarded with the JADX
+registration but does not contribute to the derived tool timeout; raise
+`toolTimeoutMs` to cover a longer selected JADX deadline.
+This headroom is a practical default, not a guarantee for every analysis
+duration. Setup preserves positive timeout values already in the `rea` entry.
+You can edit `startupTimeoutMs` and `toolTimeoutMs` there; doctor keeps positive
+caller-selected values aligned and reports a non-blocking advisory when a tool
+timeout is shorter than the known provider allowance.
+Setup selects the compact input-schema advertisement for new or refreshed Kimi
+registrations unless their stored configuration or setup environment explicitly
+selects `REA_MCP_INPUT_SCHEMA_PROFILE=full` or `compact`. This keeps REA's
+canonical tool validation unchanged while avoiding a Moonshot Kimi Code 2.2.0
+failure observed with the full catalog: its request was rejected because a
+single tool schema exceeded the provider's size limit. The limit is
+provider-specific and not an MCP protocol limit. `rea doctor --client kimi`
+reports an older registration with no explicit profile as stale. To restore the
+compact profile, run `rea setup --client kimi` or add
+`REA_MCP_INPUT_SCHEMA_PROFILE=compact` to the registration's `env`, then restart
+Kimi Code. An explicit `full` profile remains respected and can still exceed
+Moonshot's limit.
 Kimi Code also discovers personal skills in `~/.agents/skills` and project-local
 `.agents/skills`, so no separate skill root is required; setup still installs
 and verifies the matching skill files through the normal shared-skill flow.
@@ -207,8 +248,35 @@ standalone CLI check.
 
 ## Codex and Devin
 
-Codex treats an unset or empty `CODEX_HOME` as `~/.codex`. Devin honors
-`XDG_CONFIG_HOME` for its `devin/mcp_config.json` on non-Windows systems.
+Codex treats an unset or empty `CODEX_HOME` as `~/.codex`. Its MCP server
+registration supports `startup_timeout_sec` for connection initialization and
+`tool_timeout_sec` for each tool call. New REA registrations use a 30-second
+startup timeout and a tool timeout derived from the known provider
+allowance plus 120 seconds of operation headroom. This yields 450 seconds for
+the default Ghidra allowance; an explicit Ghidra startup timeout of 2700
+seconds yields 2820 seconds. That 30-second Codex figure is client guidance.
+REA's own phase budgets are `REA_MCP_INITIALIZE_BUDGET_MS` (default 15000),
+`REA_MCP_TOOLS_LIST_BUDGET_MS` (default 5000),
+`REA_MCP_FIRST_CATALOG_BUDGET_MS` (default 20000), and
+`REA_MCP_DOCTOR_DEADLINE_MS` (default 30000). Each is a positive decimal
+integer of milliseconds from 1 to 2147483647. Unset keeps the default.
+Invalid values fail configuration and name the setting. Setup copies a
+caller-selected value into the registration, and a change is read from the
+environment that starts REA, so it needs a restart. Doctor and packaged
+startup probes name the effective milliseconds, whether they came from the
+default or the setting, the default, the floor, and the maximum. REA does
+not enforce Codex's 30 seconds as the doctor deadline. The 120000 ms
+tool-operation headroom and the 64 KiB doctor stderr cap stay fixed. Setup preserves positive caller-selected timeout
+values in the REA entry, and doctor reports a non-blocking advisory when a tool
+timeout is shorter than the known provider allowance. An explicitly selected
+JEB request budget also contributes to the allowance. A configured IDA
+registration's parsed `timeoutMs` contributes for `ida` or `auto` selection.
+An explicit `REA_JADX_OPERATION_TIMEOUT_MS` is forwarded with the JADX
+registration but does not contribute; raise `tool_timeout_sec` to cover a
+longer selected JADX deadline.
+These values are client-side deadlines, so increase them in `~/.codex/config.toml` if a
+workload needs more time. Devin honors `XDG_CONFIG_HOME` for its
+`devin/mcp_config.json` on non-Windows systems.
 
 ## OMP
 

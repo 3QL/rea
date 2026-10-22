@@ -264,7 +264,7 @@ describe("case-distinct APK resource names", () => {
       await runProviderAnalysis(path, "inventory_artifact", {}),
     );
     expect(inventory.normalized_result).toMatchObject({
-      coverage_status: "complete",
+      coverage: { scope: "container-entries", status: "complete" },
     });
     const result = projectAndroidApplicationEvidence({
       inventory_evidence: [inventory],
@@ -313,7 +313,7 @@ describe("Android bridge candidate coverage", () => {
 
     if (!result.ok) throw result.error;
     const projection = androidApplicationProjectionResultSchema.parse(
-      result.value.normalized_result,
+      result.value.evidence.normalized_result,
     );
     expect(projection.components.dex).toHaveLength(1_001);
     expect(projection.bridge_candidates).toHaveLength(1_001);
@@ -346,7 +346,7 @@ describe("Android bridge candidate coverage", () => {
     });
     if (!result.ok) throw result.error;
     const projection = androidApplicationProjectionResultSchema.parse(
-      result.value.normalized_result,
+      result.value.evidence.normalized_result,
     );
 
     expect(projection.components.dex).toHaveLength(129);

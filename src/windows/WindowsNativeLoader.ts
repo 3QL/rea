@@ -20,7 +20,7 @@ export const windowsFileIdentitySchema = z.strictObject({
   filesystem: z.literal("NTFS"),
   volumeSerial: z.string().regex(/^[a-f0-9]{16}$/u),
   fileId: z.string().regex(/^[a-f0-9]{32}$/u),
-  size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  size: z.int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   directory: z.boolean(),
 });
 
@@ -87,6 +87,24 @@ export interface WindowsNativeLoadHost {
   loadArtifact(): unknown;
 }
 
+const missingWindowsNativeFileReason = (file: string): string =>
+  `Missing packaged Windows native file native/windows/build/${file} (ENOENT). Restore both native/windows/build/manifest.json and native/windows/build/rea-windows-x64.node from the rea-agents@${PACKAGE_METADATA.version} tarball or build them with native/windows/README.md; no native artifact was loaded.`;
+
+const readPackagedWindowsNativeFile = <T>(file: string, read: () => T): T => {
+  try {
+    return read();
+  } catch (cause: unknown) {
+    if (
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      cause.code === "ENOENT"
+    )
+      throw new Error(missingWindowsNativeFileReason(file), { cause });
+    throw cause;
+  }
+};
+
 /** Validate compatibility and artifact identity before invoking the native addon. */
 export const loadWindowsNativeAuthority = (
   host: WindowsNativeLoadHost,
@@ -105,10 +123,14 @@ export const loadWindowsNativeAuthority = (
       reason: "REA Windows native controls require Node-API 8 or newer.",
     };
   try {
-    const manifest = windowsNativeManifestSchema.parse(host.readManifest());
+    const manifest = windowsNativeManifestSchema.parse(
+      readPackagedWindowsNativeFile("manifest.json", () => host.readManifest()),
+    );
     if (manifest.packageVersion !== host.packageVersion)
       throw new Error("Windows native artifact belongs to another REA version");
-    const artifact = host.readArtifact();
+    const artifact = readPackagedWindowsNativeFile("rea-windows-x64.node", () =>
+      host.readArtifact(),
+    );
     if (
       createHash("sha256").update(artifact).digest("hex") !==
       manifest.artifactSha256

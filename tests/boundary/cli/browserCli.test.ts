@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCliJson as runCli } from "../../fixtures/cliJsonProcess.js";
+import { DEFAULT_BROWSER_SCENARIO_CAPTURE_LIMITS } from "../../../src/domain/browserScenarioCaptureLimits.js";
+import { BROWSER_STORAGE_FINGERPRINT_VERSION } from "../../../src/domain/browserScenarioCaptureValues.js";
 import {
   startFakeCdpBrowser,
   type FakeCdpBrowser,
@@ -665,17 +667,80 @@ const completeScenarioCapture = () => {
         header_values: false,
       },
       event_families: [],
+      limits: DEFAULT_BROWSER_SCENARIO_CAPTURE_LIMITS,
     },
     duration_ms: 1,
     steps: [
       step(0, "scenario_start", "scenario_start"),
       step(1, "open-settings", "click"),
     ],
-    events: { retained: 0, dropped: 0, items: [] },
+    events: {
+      retained: 0,
+      dropped: 0,
+      items: [],
+      omissions: {
+        by_kind: [],
+        network_transactions: [],
+        network_transaction_range: null,
+      },
+    },
     completeness,
     limitations: [],
   };
 };
+
+it(
+  "compares reordered scenario storage through the public CLI and commits the rule",
+  async () => {
+    const capture = completeScenarioCapture();
+    const entries = [
+      { name: "theme", value_state: "hashed", value_sha256: "a".repeat(64) },
+      { name: "locale", value_state: "hashed", value_sha256: "b".repeat(64) },
+    ];
+    const withStorage = (values: typeof entries) => ({
+      ...capture,
+      steps: capture.steps.map((step) => ({
+        ...step,
+        artifacts: {
+          ...step.artifacts,
+          storage: {
+            state: "captured",
+            value: {
+              fingerprint_version: BROWSER_STORAGE_FINGERPRINT_VERSION,
+              cookies: [],
+              local_storage: values,
+              session_storage: [],
+            },
+          },
+        },
+      })),
+    });
+    const compared = await compareCapturesCli(
+      withStorage(entries),
+      withStorage(entries.toReversed()),
+    );
+    expect(compared).toMatchObject({
+      operation: "compare_web_captures",
+      normalized_result: {
+        comparison_kind: "browser_scenario",
+        overall_status: "unchanged",
+        normalization: {
+          built_in_rules: expect.arrayContaining([
+            "compare_storage_entries_as_unordered_collection",
+          ]),
+        },
+      },
+    });
+    const changed = await compareCapturesCli(
+      withStorage(entries),
+      withStorage(entries.slice(1)),
+    );
+    expect(changed).toMatchObject({
+      normalized_result: { overall_status: "changed" },
+    });
+  },
+  INTEGRATION_TEST_TIMEOUT_MS,
+);
 
 const scenarioCaptureWithConsole = (
   text: string,
@@ -706,6 +771,11 @@ const scenarioCaptureWithConsole = (
           url: null,
         },
       ],
+      omissions: {
+        by_kind: [],
+        network_transactions: [],
+        network_transaction_range: null,
+      },
     },
   };
 };

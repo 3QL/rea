@@ -64,7 +64,9 @@ describe("jsonValueSchema depth bound", () => {
     const result = jsonValueSchema.safeParse(deepObject(MAX_JSON_DEPTH + 1));
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error.issues[0]?.message).toContain("maximum nesting depth");
+    expect(result.error.issues[0]?.message).toBe(
+      `JSON value exceeds maximum nesting depth of ${MAX_JSON_DEPTH}. This release has no runtime override.`,
+    );
   });
 
   it.each(["object", "array"])(
@@ -81,6 +83,18 @@ describe("jsonValueSchema depth bound", () => {
       );
     },
   );
+
+  it("stops enclosing refinements before rejected JSON reaches consumers", () => {
+    let consumed = 0;
+    const envelope = z.object({ value: jsonValueSchema }).superRefine(() => {
+      consumed += 1;
+    });
+    const result = envelope.safeParse({ value: deepObject(10_000) });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.message).toContain("maximum nesting depth");
+    expect(consumed).toBe(0);
+  });
 
   it("rejects cyclic values instead of recursing forever", () => {
     const cyclic: Record<string, unknown> = {};

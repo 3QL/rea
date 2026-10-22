@@ -7,7 +7,10 @@ import { setupRegistrationCommand } from "./SetupHost.js";
 import { CURRENT_ENTRYPOINT_PATH } from "../process/CurrentEntrypointPath.js";
 import { discoverSetupState } from "./SetupPlan.js";
 import type { MsixPackageView } from "./MsixPackageStorage.js";
-import type { SetupClient } from "./SupportedClients.js";
+import {
+  registrationWriteBlocker,
+  type SetupClient,
+} from "./SupportedClients.js";
 
 // Host joins keep containment checks meaningful on POSIX test hosts too.
 const PROFILE = String.raw`C:\Users\a`;
@@ -206,9 +209,10 @@ describe("configured Linux Hopper selection", () => {
     host.hopperLauncherConfigured = true;
     host.linuxDemoRuntimeMissing = true;
     const doctor = await host.doctor();
+    const initial = await host.initialSetupState();
     const discovery = await discoverSetupState({
       host,
-      providerEnvironment: { HOPPER_LAUNCHER_PATH: host.hopper },
+      providerConfigured: initial.providerConfigured,
       forceHopperInstall: false,
       proposeHopper: true,
       hopperLauncherConfigured: true,
@@ -227,9 +231,10 @@ describe("configured Linux Hopper selection", () => {
     };
     host.hopper = "/opt/hopper/bin/Hopper";
     host.unsupportedHopperVersion = true;
+    const initial = await host.initialSetupState();
     const discovery = await discoverSetupState({
       host,
-      providerEnvironment: { HOPPER_LAUNCHER_PATH: host.hopper },
+      providerConfigured: initial.providerConfigured,
       forceHopperInstall: false,
       proposeHopper: true,
       initialDoctor: await host.doctor(),
@@ -358,7 +363,7 @@ describe("setup workflow action selection", () => {
     ],
     [
       "readback",
-      "Agent configuration could not be verified after writing. Repair the configuration file or restore its `.rea.backup`, then rerun setup.",
+      "Agent configuration could not be verified. Repair the configuration file, then rerun setup.",
     ],
   ] as const)("explains %s configuration recovery", async (reason, message) => {
     const host = new FakeSetupHost();
@@ -372,6 +377,25 @@ describe("setup workflow action selection", () => {
     expect(result.status).toBe("needs_human");
     expect(result.remediation).toBe(message);
     expect(result.remediation).not.toContain("internal_client_key");
+  });
+
+  it("names the recovery backup that holds the restored original after a readback failure", async () => {
+    const host = new FakeSetupHost();
+    host.hopper = "/Applications/Hopper";
+    host.clients = [{ name: "cursor", configPath: "/agent.json" }];
+    const backupPath = `/agent.json.rea.backup.${"a".repeat(64)}.recovery`;
+    host.clientResults.set("cursor", {
+      status: "failed",
+      reason: "readback",
+      backupPath,
+    });
+    const result = await runSetup(
+      { ...options(true), clientIds: ["cursor"] },
+      host,
+    );
+    expect(result.remediation).toBe(
+      `Agent configuration could not be verified after writing. The original was restored and its backup at ${backupPath} was retained. Repair the configuration file or restore that backup, then rerun setup.`,
+    );
   });
 });
 
@@ -395,6 +419,17 @@ describe("MSIX Claude Desktop setup", () => {
     );
     expect(action?.detail).toContain(
       "Quit Claude Desktop fully before approving; closing its window is not enough.",
+    );
+  });
+
+  it("names the files to edit by hand when the process view is unknown", () => {
+    // The package reads its private copy, so a manual setup edit belongs there.
+    const client = msixClaudeDesktop("unknown");
+    expect(registrationWriteBlocker(client, "setup")).toContain(
+      `Add REA's entry to ${PRIVATE_CONFIG} by hand`,
+    );
+    expect(registrationWriteBlocker(client, "uninstall")).toContain(
+      `Remove REA's entry by hand from each of ${PRIVATE_CONFIG} and ${APPDATA_CONFIG} that has one`,
     );
   });
 

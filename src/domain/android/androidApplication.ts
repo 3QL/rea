@@ -1,4 +1,9 @@
+import {
+  bridgeCandidateCoverageSchema,
+  projectCartesianCandidates,
+} from "../bridgeCandidateProjection.js";
 import { z } from "zod";
+import { AnalysisInputError } from "../analysisErrorCore.js";
 
 import {
   hasCompleteInventoryCoverage,
@@ -6,19 +11,18 @@ import {
 } from "../artifactInventoryEvidence.js";
 import { digestSchema } from "../digests.js";
 import { prefixedDigestSchema } from "../digests.js";
+import { digestCanonicalValue } from "../canonicalDigest.js";
 import { nativeRuntimeConvention } from "../nativeConvention.js";
 import {
   applicationInventoryProjectionInputSchema,
-  bridgeCandidateCoverageSchema,
-  projectCartesianCandidates,
+  type MobileApplicationProjectionWithSources,
   projectedBridgeCandidateSchema,
   projectedComponentSchema,
-  projectedComponents,
+  projectedInventoryEntries,
+  projectedFileComponents,
   projectionCoverage,
-  projectionDigest,
   projectionEvidenceIdSchema,
   unavailableComponentSchema,
-  unavailableComponents,
 } from "../mobileApplicationGraphProjection.js";
 import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
 
@@ -85,17 +89,30 @@ type Component = z.infer<typeof componentSchema>;
 /** Project exact APK paths and hashes without decoding or executing target code. */
 export const projectAndroidApplication = (
   input: AndroidApplicationProjectionInput,
-): AndroidApplicationProjectionResult => {
+): MobileApplicationProjectionWithSources<AndroidApplicationProjectionResult> => {
   const parsed = androidApplicationProjectionInputSchema.parse(input);
   const { evidence, inventory } = parseArtifactInventoryEvidence(
     parsed.inventory_evidence,
   );
   if (inventory.manifest.root_format !== "apk")
-    throw new TypeError(
-      `Android application projection requires APK inventory Evidence; the inventory root format is ${inventory.manifest.root_format}. APK is chosen for a ZIP archive whose name ends in .apk.`,
-    );
-  const all = projectedComponents(inventory);
-  const unavailable = unavailableComponents(inventory);
+    throw new AnalysisInputError("project_android_application_graph", {}, [
+      {
+        path: [
+          "inventory_evidence",
+          0,
+          "normalized_result",
+          "manifest",
+          "root_format",
+        ],
+        reason: "invalid_value",
+        message: `Android application projection requires APK inventory Evidence; the inventory root format is ${inventory.manifest.root_format}. APK is chosen for a ZIP archive whose name ends in .apk.`,
+      },
+    ]);
+  const entries = projectedInventoryEntries(inventory);
+  const all = projectedFileComponents(entries);
+  const unavailable = entries.flatMap(({ unavailable }) =>
+    unavailable === undefined ? [] : [unavailable],
+  );
   const classified = classify(all);
   const bridgeProjection = bridgeCandidates(
     [...classified.dex, ...classified.jvm_classes],
@@ -136,7 +153,7 @@ export const projectAndroidApplication = (
       .sort(compareUnicodeCodePoints),
     components,
     unavailable_components: unavailable,
-    runtime_families: runtimeFamilies(all),
+    runtime_families: runtimeFamilies(all, classified),
     bridge_candidates: bridgeProjection.candidates,
     bridge_candidate_coverage: bridgeProjection.coverage,
     coverage: projectionCoverage(
@@ -146,10 +163,13 @@ export const projectAndroidApplication = (
     ),
     limitations,
   };
-  return androidApplicationProjectionResultSchema.parse({
-    ...withoutId,
-    projection_id: `adp_${projectionDigest(withoutId, "Android application projection")}`,
-  });
+  return {
+    projection: androidApplicationProjectionResultSchema.parse({
+      ...withoutId,
+      projection_id: `adp_${digestCanonicalValue(withoutId, "Android application projection")}`,
+    }),
+    sources: evidence,
+  };
 };
 
 const classify = (all: readonly Component[]) => ({
@@ -169,14 +189,15 @@ const classify = (all: readonly Component[]) => ({
   ),
 });
 
-const runtimeFamilies = (all: readonly Component[]) => {
+const runtimeFamilies = (
+  all: readonly Component[],
+  components: AndroidApplicationProjectionResult["components"],
+) => {
   const families = new Set<
     AndroidApplicationProjectionResult["runtime_families"][number]
   >();
-  if (all.some(({ path }) => path.toLowerCase().endsWith(".dex")))
-    families.add("dalvik-art");
-  if (all.some(({ path }) => path.toLowerCase().endsWith(".class")))
-    families.add("java-kotlin");
+  if (components.dex.length > 0) families.add("dalvik-art");
+  if (components.jvm_classes.length > 0) families.add("java-kotlin");
   if (all.some(({ format }) => format === "elf")) families.add("native");
   if (all.some(({ format }) => format === "javascript-bundle"))
     families.add("javascript");

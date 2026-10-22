@@ -18,6 +18,7 @@ import {
   readGhidraLanguageCatalog,
 } from "./GhidraLanguageCatalog.js";
 import { GhidraProvider } from "./GhidraProvider.js";
+import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 
 // Abbreviated from Ghidra 12.1.4 Processors/x86/data/languages/x86.ldefs.
 const X86_LDEFS = `<?xml version="1.0" encoding="UTF-8"?>
@@ -39,6 +40,16 @@ const X86_LDEFS = `<?xml version="1.0" encoding="UTF-8"?>
 </language_definitions>
 `;
 
+const MIPS_LDEFS = `<?xml version="1.0" encoding="UTF-8"?>
+<language_definitions>
+  <language processor="MIPS" endian="little" size="32" variant="default"
+            id="MIPS:LE:32:default">
+    <description>MIPS 32-bit little endian</description>
+    <compiler name="default" spec="mips32.cspec" id="default"/>
+  </language>
+</language_definitions>
+`;
+
 const pe: BinaryTarget = {
   path: "/fixture.exe",
   sha256: "a".repeat(64),
@@ -48,6 +59,23 @@ const pe: BinaryTarget = {
   availableArchitectures: ["x86"],
   executableRole: "application",
   managed: false,
+};
+
+const legacyMips: BinaryTarget = {
+  path: "/fixture-mips.elf",
+  sha256: "b".repeat(64),
+  kind: "executable",
+  format: "elf",
+  architecture: "mips",
+  availableArchitectures: ["mips"],
+  mips: {
+    elfClass: 32,
+    byteOrder: "little",
+    type: 2,
+    flags: 0x50000001,
+    abiFlags: null,
+    gnuAttributes: null,
+  },
 };
 
 let installDir = "";
@@ -170,10 +198,15 @@ describe("Ghidra language catalog", () => {
       },
       { id: "x86:LE:16:Real Mode", compilerSpecIds: ["default"] },
     ]);
-    expect(await readGhidraLanguageCatalog(installDir)).toHaveLength(2);
-    expect(await readGhidraLanguageCatalog(join(installDir, "absent"))).toEqual(
-      [],
-    );
+    expect(
+      await readGhidraLanguageCatalog(installDir, new ArtifactResourceScope()),
+    ).toHaveLength(2);
+    expect(
+      await readGhidraLanguageCatalog(
+        join(installDir, "absent"),
+        new ArtifactResourceScope(),
+      ),
+    ).toEqual([]);
   });
 
   it("reads a UTF-8 signed definition beside an unsigned sibling", async () => {
@@ -192,7 +225,9 @@ describe("Ghidra language catalog", () => {
       ]),
     );
     await writeFile(join(module("x86"), "x86.ldefs"), X86_LDEFS);
-    expect(await readGhidraLanguageCatalog(root)).toEqual([
+    expect(
+      await readGhidraLanguageCatalog(root, new ArtifactResourceScope()),
+    ).toEqual([
       { id: "probe:LE:32:default", compilerSpecIds: [] },
       ...parseGhidraLanguageDefinitions(X86_LDEFS),
     ]);
@@ -274,6 +309,30 @@ describe("Ghidra language override profile", () => {
       languageId: "x86:LE:32:default",
       compilerSpecId: "borlandcpp",
     });
+  });
+
+  it("accepts the caller-selected language on the legacy MIPS lane", async () => {
+    const mipsLanguages = join(
+      installDir,
+      "Ghidra/Processors/MIPS/data/languages",
+    );
+    await mkdir(mipsLanguages, { recursive: true });
+    const definition = join(mipsLanguages, "mips.ldefs");
+    await writeFile(definition, MIPS_LDEFS);
+    try {
+      const resolved = await provider({
+        REA_GHIDRA_LANGUAGE_ID: "MIPS:LE:32:default",
+        REA_GHIDRA_COMPILER_SPEC_ID: "default",
+      }).resolveAnalysisProfile(legacyMips);
+      if (!resolved.ok) throw resolved.error;
+      expect(resolved.value.profile?.parameters).toMatchObject({
+        language_id: "MIPS:LE:32:default",
+        compiler_spec_id: "default",
+        language_selection: "configured-v1",
+      });
+    } finally {
+      await rm(mipsLanguages, { recursive: true, force: true });
+    }
   });
 
   it("records the language default when no compiler spec is configured", async () => {

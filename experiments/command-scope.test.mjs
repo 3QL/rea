@@ -3,12 +3,16 @@ import test from "node:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate, setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { withCommands } from "./command-scope.mjs";
+import {
+  ExperimentCommandCleanupFailure,
+  withCommands,
+} from "./command-scope.mjs";
+import { OwnedCommandFailure } from "../dist/process/OwnedCommand.js";
 import { cleanupOwnedProcessGroup } from "../dist/process/ProcessOwnership.js";
 import {
   observeProcessStartIdentity,
@@ -41,6 +45,235 @@ test("refuses incomplete output instead of accepting a truncated result", async 
     (error) => error.reason === "output-limit",
   );
 });
+
+test("joins accepted late preparation, preserves controls and seals command admission", async () => {
+  let release;
+  const prepared = new Promise((resolve) => {
+    release = resolve;
+  });
+  let accepted,
+    invocation,
+    stopped = 0,
+    finished = false;
+  const pending = withCommands(
+    async (run) => {
+      accepted = run;
+      void run("selected-tool", ["selected-input"], {
+        timeoutMs: 7_311,
+        maxBytes: 8_192,
+        acceptNonZeroExit: true,
+        cwd: "/caller-selected",
+        environment: { SELECTED_VALUE: "token=ordinary-input" },
+      });
+      return "completed observation";
+    },
+    {
+      prepareOwnership: () => prepared,
+      runCommand: async (input, limits, options) => {
+        invocation = { input, limits };
+        options.retainCleanup({
+          stop: async () => {
+            stopped++;
+            return { status: "verified-cleanup" };
+          },
+        });
+        return {
+          stdout: { text: "captured" },
+          stderr: { text: "" },
+          exitCode: 0,
+        };
+      },
+    },
+  ).then((value) => {
+    finished = true;
+    return value;
+  });
+  try {
+    await setImmediate();
+    assert.equal(finished, false);
+    assert.equal(invocation, undefined);
+  } finally {
+    release();
+  }
+  assert.equal(await pending, "completed observation");
+  assert.equal(stopped, 1);
+  assert.deepEqual(invocation.limits, {
+    timeoutMs: 7_311,
+    diagnosticBytes: 8_192,
+    acceptNonZeroExit: true,
+  });
+  assert.equal(invocation.input.command, "selected-tool");
+  assert.deepEqual(invocation.input.arguments, ["selected-input"]);
+  assert.equal(invocation.input.cwd, "/caller-selected");
+  assert.deepEqual(invocation.input.hostEnvironment, {
+    SELECTED_VALUE: "token=ordinary-input",
+  });
+  await assert.rejects(
+    accepted("too-late", []),
+    (error) => error.reason === "cancelled",
+  );
+});
+
+test("preserves primary and late cancellation while retrying only unresolved cleanup owners", async () => {
+  const primary = new Error("original verification failure");
+  const counts = [0, 0, 0];
+  const recovered = [true, false, false];
+  let selectedSignal;
+  const owners = counts.map((_, index) => ({
+    stop: async () => {
+      counts[index]++;
+      if (index === 1 && !recovered[index]) process.emit("SIGINT");
+      return recovered[index]
+        ? { status: "verified-cleanup" }
+        : { status: "incomplete", reason: `controlled denial ${index}` };
+    },
+  }));
+  const outcome = await withCommands(
+    async (run, signal) => {
+      selectedSignal = signal;
+      await run("controlled-owner", []);
+      throw primary;
+    },
+    {
+      prepareOwnership: async () => {},
+      runCommand: async (_input, _limits, options) => {
+        owners.forEach(options.retainCleanup);
+        return {
+          stdout: { text: "completed observation" },
+          stderr: { text: "" },
+          exitCode: 0,
+        };
+      },
+    },
+  ).then(
+    () => {
+      throw new Error("Expected retained cleanup failure");
+    },
+    (error) => error,
+  );
+  assert(outcome instanceof AggregateError);
+  assert.equal(outcome.cause, primary);
+  assert.equal(outcome.errors[0], primary);
+  const cancellation = outcome.errors.find(
+    (error) => error instanceof OwnedCommandFailure,
+  );
+  assert.equal(cancellation.reason, "cancelled");
+  assert.equal(cancellation.cause, selectedSignal.reason);
+  assert.equal(cancellation.cancellation.reason, selectedSignal.reason);
+  assert.equal(
+    outcome.errors.filter(
+      (error) => error instanceof ExperimentCommandCleanupFailure,
+    ).length,
+    2,
+  );
+  assert.deepEqual([...outcome.cleanupOwners], owners.slice(1));
+  recovered[1] = true;
+  await assert.rejects(
+    outcome.retryCleanup(),
+    (error) => error.cleanupOwners.size === 1,
+  );
+  assert.deepEqual([...outcome.cleanupOwners], [owners[2]]);
+  recovered[2] = true;
+  await outcome.retryCleanup();
+  await outcome.retryCleanup();
+  assert.equal(outcome.cleanupOwners.size, 0);
+  assert.deepEqual(counts, [1, 2, 3]);
+});
+
+test(
+  "owns repeated signals through final retained-owner cleanup",
+  {
+    skip:
+      process.platform === "win32" ? "POSIX signal delivery control" : false,
+    timeout: 20_000,
+  },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "rea-command-finalize-"));
+    const cleanup = join(root, "cleanup.ready");
+    const cancelled = join(root, "cancelled.json");
+    const checkpoint = join(root, "checkpoint");
+    const alive = join(root, "cleanup.still-owned");
+    const release = join(root, "release");
+    const module = new URL("./command-scope.mjs", import.meta.url).href;
+    const code = `import {existsSync,writeFileSync} from 'node:fs';
+import {setTimeout as delay} from 'node:timers/promises';
+import {withCommands} from ${JSON.stringify(module)};
+let firstReason,stops=0;
+const owner={stop:async()=>{
+  stops++; writeFileSync(${JSON.stringify(cleanup)},'ready');
+  while(!existsSync(${JSON.stringify(release)})) {
+    if(existsSync(${JSON.stringify(checkpoint)})) writeFileSync(${JSON.stringify(alive)},'held');
+    await delay(10);
+  }
+  return {status:'verified-cleanup'};
+}};
+try {
+  await withCommands(async(run,signal)=>{
+    signal.addEventListener('abort',()=>{firstReason=signal.reason;writeFileSync(${JSON.stringify(cancelled)},JSON.stringify({reason:firstReason.message}));},{once:true});
+    return run('controlled-owner',[]);
+  },{
+    prepareOwnership:async()=>{},
+    runCommand:async(_input,_limits,options)=>{options.retainCleanup(owner);return {stdout:{text:'completed observation'},stderr:{text:''},exitCode:0};},
+  });
+  throw new Error('Finalization cancellation was reported as success');
+} catch(error) {
+  process.stdout.write(JSON.stringify({reason:error.reason,cause_matches:error.cause===firstReason,cancellation_matches:error.cancellation?.reason===firstReason,stops,listeners:[process.listenerCount('SIGINT'),process.listenerCount('SIGTERM')]})+'\\n');
+  process.exitCode=error.reason==='cancelled'?0:1;
+}`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "",
+      diagnostic = "",
+      ended = false;
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      diagnostic += chunk;
+    });
+    child.once("close", () => {
+      ended = true;
+    });
+    const closed = once(child, "close");
+    void closed.catch(() => {});
+    const waitFor = async (path) => {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(path)) {
+        assert.equal(ended, false, output + diagnostic);
+        assert(Date.now() < deadline, `Missing lifecycle marker ${path}`);
+        await delay(20);
+      }
+    };
+    try {
+      await waitFor(cleanup);
+      assert.equal(child.kill("SIGINT"), true);
+      await waitFor(cancelled);
+      assert.equal(child.kill("SIGINT"), true);
+      assert.equal(child.kill("SIGTERM"), true);
+      await writeFile(checkpoint, "observe continued cleanup");
+      await waitFor(alive);
+      await writeFile(release, "release");
+      const [exit, signal] = await closed;
+      assert.equal(exit, 0, output + diagnostic);
+      assert.equal(signal, null, output + diagnostic);
+      assert.deepEqual(JSON.parse(output), {
+        reason: "cancelled",
+        cause_matches: true,
+        cancellation_matches: true,
+        stops: 1,
+        listeners: [0, 0],
+      });
+    } finally {
+      await writeFile(release, "release");
+      if (!ended) child.kill("SIGKILL");
+      await closed.catch(() => {});
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test(
   "cancels a ready owned child and verifies its exact process has exited",
   {

@@ -56,6 +56,10 @@ export async function withCommands(
     });
   const owners = new Set();
   const active = new Set();
+  // Pending-work ownership and durable failed outcomes have different lifetimes.
+  // Do not retain successful output, but keep every failed cause until scope
+  // completion even when its command settled before the callback returned.
+  const commandFailures = new Set();
   let accepting = true;
   // Keep both handlers until the final owned cleanup settles. A second signal
   // must not restore Node's default termination in the middle of that cleanup.
@@ -108,8 +112,10 @@ export async function withCommands(
     // while a command is starting cannot leave a late command outside cleanup.
     const running = execute(command, args, options);
     const settled = running.then(
-      () => ({ ok: true }),
-      (cause) => ({ ok: false, cause }),
+      () => {},
+      (cause) => {
+        commandFailures.add(cause);
+      },
     );
     active.add(settled);
     void settled.then(() => active.delete(settled));
@@ -124,9 +130,9 @@ export async function withCommands(
       failures.push(cause);
     }
     accepting = false;
-    for (const result of await Promise.all(active))
-      if (!result.ok && !failures.includes(result.cause))
-        failures.push(result.cause);
+    await Promise.all(active);
+    for (const cause of commandFailures)
+      if (!failures.includes(cause)) failures.push(cause);
     let cleanup;
     try {
       await settleCommandOwners(owners);

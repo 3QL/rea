@@ -114,6 +114,56 @@ test("joins accepted late preparation, preserves controls and seals command admi
   );
 });
 
+for (const callbackFails of [false, true])
+  test(`retains early child failure ${callbackFails ? "alongside independent callback failure" : "after later callback success"}`, async () => {
+    const primary = new Error("independent callback failure");
+    let failed;
+    const observedFailure = new Promise((resolve) => {
+      failed = resolve;
+    });
+    let commandFailure;
+    await assert.rejects(
+      withCommands(async (run) => {
+        void run(process.execPath, [
+          "-e",
+          "process.stderr.write('early child refusal');process.exit(9)",
+        ]).catch((cause) => {
+          commandFailure = cause;
+          failed();
+        });
+        // Synchronize with the failed producer, then finish independent callback
+        // work after the pending command has already left the scope's active set.
+        await observedFailure;
+        await setImmediate();
+        assert.equal(
+          (
+            await run(process.execPath, [
+              "-e",
+              "process.stdout.write('later success')",
+            ])
+          ).stdout,
+          "later success",
+        );
+        if (callbackFails) throw primary;
+        return "callback succeeded";
+      }),
+      (error) => {
+        assert.equal(commandFailure.reason, "process");
+        assert.equal(commandFailure.snapshot.exitCode, 9);
+        assert.equal(
+          commandFailure.snapshot.stderr.text,
+          "early child refusal",
+        );
+        if (callbackFails) {
+          assert(error instanceof AggregateError);
+          assert.equal(error.cause, primary);
+          assert.deepEqual(error.errors, [primary, commandFailure]);
+        } else assert.equal(error, commandFailure);
+        return true;
+      },
+    );
+  });
+
 test("preserves primary and late cancellation while retrying only unresolved cleanup owners", async () => {
   const primary = new Error("original verification failure");
   const counts = [0, 0, 0];

@@ -49,7 +49,10 @@ or Node's inspection of live cleanup capabilities.
   remain installed through final cleanup, including repeated signals. Cleanup
   uses its own physical stop boundary rather than the cancelled caller signal.
   The first cancellation reason and independent primary/cleanup failures remain
-  distinguishable; only unresolved owners are retried.
+  distinguishable; only unresolved owners are retried. Settled command failures
+  remain owned even if the callback continues with later successful work or
+  throws its own independent error. Successful diagnostics are not retained by
+  that failure ledger; expected nonzero exits use explicit `acceptNonZeroExit`.
 - SDK AAPT2 may print its version on stderr. Receipts retain the channel of each
   recognized version declaration; an unrecognized or conflicting declaration
   leaves the selected version unknown (`null`). Raw command diagnostics remain

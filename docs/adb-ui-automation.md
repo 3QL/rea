@@ -185,6 +185,14 @@ application state is left as-is.
   mutations. Those calls join earlier UI work and remain blocked while its
   cleanup is unresolved. A missing request after interrupted preparation is unresolved delivery, not
   proof of cancellation; cleanup retains it until delivery can be reconciled.
+- Each provider instance admits ADB execution requests in arrival order, before
+  client discovery, and holds the turn through execution and cleanup. Later
+  requests, including non-UI reads and mutations, cannot overtake UI setup or
+  final acknowledgement. A queued caller may cancel independently without
+  releasing its successor ahead of earlier work. Closing seals new admission
+  and joins all accepted turns before retrying retained cleanup. This ordering
+  is local to that provider instance; it does not lock other REA processes or
+  external ADB clients.
 - One-shot CLI close failures preserve the original operation error and any
   completed/partial observation, so an acknowledgement failure does not hide
   a dispatched action.

@@ -1,6 +1,8 @@
 import { chmod, readFile, writeFile, rename } from "node:fs/promises";
-import { expect, onTestFinished, test } from "vitest";
+import { setImmediate } from "node:timers/promises";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { AdbProvider } from "../../../../src/adb/AdbProvider.js";
+import * as adbConfiguration from "../../../../src/adb/AdbConfiguration.js";
 import {
   AdbUiRunner,
   parseAdbUiReply,
@@ -15,6 +17,7 @@ import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDev
 import { toolContract } from "../../../../src/contracts/toolContracts.js";
 import { createApplicationMcpHarness } from "../../../fixtures/applicationMcpHarness.js";
 import { parseMcpToolError } from "../../../fixtures/mcpToolError.js";
+import { createDeferred } from "../../../fixtures/binarySession.js";
 import {
   createTestWorkspace,
   removeTestWorkspace,
@@ -93,6 +96,12 @@ if(args[0] === 'version') {
 if(JSON.stringify(args) === JSON.stringify(['-s','emulator-5554','shell','am','force-stop','com.example.app'])) {
   fs.appendFileSync(path.join(root,'calls'),JSON.stringify({operation:'stop_adb_app',arguments:args})+'\\n');
   if(fs.existsSync(path.join(root,'active'))) throw new Error('Non-UI dispatch raced an unsettled UI request');
+  const mode=JSON.parse(fs.readFileSync(path.join(root,'mode.json'),'utf8'));
+  if(mode.hold_stop) {
+    fs.writeFileSync(path.join(root,'stop-entered'),'held');
+    while(!fs.existsSync(path.join(root,'release-stop'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+  }
+  if(mode.stop_failure) { console.error('device offline'); process.exit(1); }
   process.exit(0);
 }
 const stream = args[2] === 'shell' && args[3] === '-T';
@@ -139,6 +148,10 @@ if (request.operation === 'ping') {
   if(response!==null) fs.writeFileSync(file,JSON.stringify(response));
   reply({state:response===null?'missing':'settled',response});
 } else if (request.operation === 'forget') {
+  if(mode.hold_forget) {
+    fs.writeFileSync(path.join(root,'forget-entered'),request.target_request_id);
+    while(!fs.existsSync(path.join(root,'release-forget'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+  }
   if(mode.forget_offline) { console.error('device offline'); process.exit(1); }
   if(mode.forget_offline_once && !fs.existsSync(path.join(root,'forget-ack-lost'))) {
     fs.writeFileSync(path.join(root,'forget-ack-lost'),'forgotten');
@@ -188,6 +201,8 @@ if (request.operation === 'ping') {
   });
   const service = new AdbDeviceAnalysisService(provider);
   onTestFinished(async () => {
+    await writeFile(workspace.path("release-stop"), "release");
+    await writeFile(workspace.path("release-forget"), "release");
     await writeFile(config, "{}");
     await provider.close();
     await removeTestWorkspace(workspace.root);
@@ -200,6 +215,33 @@ if (request.operation === 'ping') {
     service,
     setMode: (next: Record<string, unknown>) =>
       writeFile(config, JSON.stringify(next)),
+  };
+}
+
+/** Hold the producing discovery boundary; all released probes still run the real child. */
+function holdClientDiscovery() {
+  const entered = createDeferred<void>();
+  const resumed = createDeferred<void>();
+  const inspect = adbConfiguration.inspectAdbClient;
+  let held = false;
+  const discovery = vi
+    .spyOn(adbConfiguration, "inspectAdbClient")
+    .mockImplementation(async (...args) => {
+      if (!held) {
+        held = true;
+        entered.resolve();
+        await resumed.promise;
+      }
+      return inspect(...args);
+    });
+  onTestFinished(() => {
+    resumed.resolve();
+    discovery.mockRestore();
+  });
+  return {
+    entered: entered.promise,
+    release: () => resumed.resolve(),
+    discovery,
   };
 }
 
@@ -539,7 +581,207 @@ const actionInput = {
   action: { kind: "tap" },
 } as const;
 
-it("reconciles retained UI work before non-UI dispatch on the same MCP connection", async () => {
+it("reserves ADB admission before UI client discovery on the same MCP connection", async () => {
+  const { provider, workspace } = await fixture();
+  const held = holdClientDiscovery();
+  const stopEntered = createDeferred<void>();
+  const harness = await createApplicationMcpHarness({
+    serverOptions: {
+      adbDeviceAnalysis: {
+        inspectAvailability: (signal) => provider.inspectAvailability(signal),
+        close: () => provider.close(),
+        execute: (request, options) => {
+          const pending = provider.execute(request, options);
+          if (request.operation === "stop_adb_app") stopEntered.resolve();
+          return pending;
+        },
+      },
+    },
+  });
+  onTestFinished(() => harness.close());
+  const ui = harness.client.callTool({
+    name: "inspect_adb_ui",
+    arguments: scope,
+  });
+  await held.entered;
+  const stop = harness.client.callTool({
+    name: "stop_adb_app",
+    arguments: scope,
+  });
+  try {
+    await stopEntered.promise;
+    // Drain the accepted call's promise continuations, not a guessed child-process
+    // delay. The controlled first discovery cannot progress until released.
+    await setImmediate();
+    expect(held.discovery).toHaveBeenCalledTimes(1);
+  } finally {
+    held.release();
+    await Promise.all([ui, stop]);
+  }
+  expect((await ui).isError).not.toBe(true);
+  expect((await stop).isError).not.toBe(true);
+  const operations = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).operation);
+  expect(operations.slice(-2)).toEqual(["forget", "stop_adb_app"]);
+});
+
+it("cancels queued turns without releasing successors or close ahead of discovery", async () => {
+  const { provider, service, workspace } = await fixture();
+  const held = holdClientDiscovery();
+  const ui = service.execute("inspect_adb_ui", scope);
+  await held.entered;
+  const controller = new AbortController();
+  const reason = new AnalysisOutputError(
+    "inspect_adb_ui",
+    "opaque abort reason",
+  );
+  const abandoned = service.execute("inspect_adb_ui", scope, {
+    signal: controller.signal,
+  });
+  const retained = service.execute(
+    "find_adb_ui_elements",
+    { ...scope, selector: {}, timeout_ms: 7_311 },
+    { signal: new AbortController().signal },
+  );
+  const stop = service.execute("stop_adb_app", scope);
+  controller.abort(reason);
+  let closed = false;
+  const closing = provider.close().then(() => {
+    closed = true;
+  });
+  try {
+    const cancelled = await abandoned;
+    if (cancelled.ok) throw new Error("Expected queued cancellation");
+    expect(cancelled.error._tag).toBe("AnalysisCancelledError");
+    expect(cancelled.error.cause).toBe(reason);
+    await setImmediate();
+    expect(held.discovery).toHaveBeenCalledTimes(1);
+    expect(closed).toBe(false);
+    const refused = await service.execute("inspect_adb_ui", scope);
+    if (refused.ok) throw new Error("Close must seal new admission");
+    expect(refused.error._tag).toBe("AnalysisCancelledError");
+  } finally {
+    held.release();
+    await Promise.all([ui, retained, stop, closing]);
+  }
+  const observed = await ui;
+  if (!observed.ok) throw observed.error;
+  const selected = await retained;
+  if (!selected.ok) throw selected.error;
+  expect(selected.value.parameters.timeout_ms).toBe(7_311);
+  expect(
+    JSON.parse(await readFile(workspace.path("received-input.json"), "utf8")),
+  ).toMatchObject({ timeout_ms: 7_311 });
+  const stopped = await stop;
+  if (!stopped.ok) throw stopped.error;
+  expect(closed).toBe(true);
+  const operations = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).operation);
+  expect(
+    operations.filter((operation) => operation === "inspect_adb_ui"),
+  ).toHaveLength(1);
+  expect(operations.slice(-2)).toEqual(["forget", "stop_adb_app"]);
+});
+
+it("keeps UI discovery behind an earlier non-UI mutation even when that mutation fails", async () => {
+  const { service, workspace } = await fixture({
+    hold_stop: true,
+    stop_failure: true,
+  });
+  const discovery = vi.spyOn(adbConfiguration, "inspectAdbClient");
+  onTestFinished(() => discovery.mockRestore());
+  const stop = service.execute("stop_adb_app", scope);
+  await expect
+    .poll(() => readFile(workspace.path("stop-entered"), "utf8"), {
+      timeout: 15_000,
+    })
+    .toBe("held");
+  const ui = service.execute("inspect_adb_ui", scope);
+  try {
+    await setImmediate();
+    expect(discovery).toHaveBeenCalledTimes(1);
+  } finally {
+    await writeFile(workspace.path("release-stop"), "release");
+    await Promise.all([stop, ui]);
+  }
+  const failed = await stop;
+  if (failed.ok) throw new Error("Expected the ordinary ADB transport failure");
+  expect(failed.error.cleanupIncomplete).toBe(false);
+  const observed = await ui;
+  if (!observed.ok) throw observed.error;
+  expect(observed.value.authority).toBe("controlled-replay");
+  const operations = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).operation);
+  expect(operations[0]).toBe("stop_adb_app");
+  expect(operations.at(-1)).toBe("forget");
+});
+
+it("holds admission and shutdown through cancellation during final UI acknowledgement", async () => {
+  const { service, provider, workspace } = await fixture({ hold_forget: true });
+  const controller = new AbortController();
+  const reason = new Error("cancel while final acknowledgement is held");
+  const ui = service.execute("perform_adb_ui_action", actionInput, {
+    signal: controller.signal,
+  });
+  await expect
+    .poll(() => readFile(workspace.path("forget-entered"), "utf8"), {
+      timeout: 15_000,
+    })
+    .toMatch(/^[a-f0-9-]{36}$/u);
+  const stop = service.execute("stop_adb_app", scope);
+  let closed = false;
+  const closing = provider.close().then(() => {
+    closed = true;
+  });
+  try {
+    controller.abort(reason);
+    // The second forget is independent cleanup after the cancelled first child.
+    // Holding that child proves the caller and close still own finalization.
+    await expect
+      .poll(
+        async () =>
+          (await readFile(workspace.path("calls"), "utf8"))
+            .trim()
+            .split("\n")
+            .filter((line) => JSON.parse(line).operation === "forget").length,
+        { timeout: 15_000 },
+      )
+      .toBe(2);
+    expect(closed).toBe(false);
+    expect(await readFile(workspace.path("calls"), "utf8")).not.toContain(
+      '"operation":"stop_adb_app"',
+    );
+  } finally {
+    await writeFile(workspace.path("release-forget"), "release");
+    await Promise.all([ui, stop, closing]);
+  }
+  const cancelled = await ui;
+  if (cancelled.ok) throw new Error("Expected finalization cancellation");
+  expect(cancelled.error._tag).toBe("AnalysisCancelledError");
+  expect(cancelled.error.cause).toBe(reason);
+  expect(cancelled.error.cleanupIncomplete).toBe(false);
+  expect(parseEvidence(cancelled.error.partialObservation)).toMatchObject({
+    operation: "perform_adb_ui_action",
+    authority: "controlled-replay",
+    normalized_result: { dispatch_attempted: true, action_completed: true },
+  });
+  const stopped = await stop;
+  if (!stopped.ok) throw stopped.error;
+  expect(closed).toBe(true);
+  const operations = (await readFile(workspace.path("calls"), "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).operation);
+  expect(operations.slice(-2)).toEqual(["forget", "stop_adb_app"]);
+});
+
+it("reconciles retained UI work before a non-UI call queued during discovery on the same MCP connection", async () => {
   const { provider, workspace, setMode } = await fixture({
     kind: "hang",
     status_offline: true,
@@ -552,17 +794,21 @@ it("reconciles retained UI work before non-UI dispatch on the same MCP connectio
     await setMode({});
     await harness.close();
   });
-  const interrupted = await harness.client.callTool({
+  const held = holdClientDiscovery();
+  const ui = harness.client.callTool({
     name: "perform_adb_ui_action",
     arguments: actionInput,
   });
-  expect(parseMcpToolError(interrupted).error.code).toBe("cleanup_incomplete");
-  const activeId = await readFile(workspace.path("active"), "utf8");
-
-  const blocked = await harness.client.callTool({
+  await held.entered;
+  const stop = harness.client.callTool({
     name: "stop_adb_app",
     arguments: scope,
   });
+  held.release();
+  const interrupted = await ui;
+  const blocked = await stop;
+  expect(parseMcpToolError(interrupted).error.code).toBe("cleanup_incomplete");
+  const activeId = await readFile(workspace.path("active"), "utf8");
   expect(parseMcpToolError(blocked).error).toMatchObject({
     code: "cleanup_incomplete",
     details: { operation: "stop_adb_app" },

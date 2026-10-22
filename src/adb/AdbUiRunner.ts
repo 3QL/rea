@@ -18,7 +18,6 @@ import {
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
-import { awaitPredecessor } from "../application/awaitPredecessor.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
@@ -158,7 +157,10 @@ export const parseAdbUiReply = (
   }
 };
 
-/** Own host commands and request cancellation; the instrumentation process belongs to the operator. */
+/**
+ * Own host commands and remote requests, borrowing AdbProvider's serialized
+ * admission. The instrumentation process belongs to the operator.
+ */
 export class AdbUiRunner {
   readonly #pending = new Map<string, RemoteRequest>();
   readonly #commands = new Map<ProviderProcessSupervisor, string>();
@@ -167,7 +169,6 @@ export class AdbUiRunner {
   /** Outcomes survive remote forget/acknowledgement failures until reported to a caller. */
   #recoveredActionOutcomes = new Map<string, RecoveredActionOutcome>();
   #unknownActionOutcome: RecoveredActionOutcome | undefined;
-  #tail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly environment: Readonly<Record<string, string | undefined>>,
@@ -427,17 +428,16 @@ export class AdbUiRunner {
     }
   }
 
-  /** Host commands settle first so a late broadcast cannot outlive reconciliation. */
+  /** The provider drains accepted work before closing this transport. */
   async close(): Promise<void> {
-    await this.reconcile("close_binary");
+    await this.#retryCleanup();
   }
 
-  /** Join earlier UI work and settle its retained owners before provider admission. */
+  /** Reconcile retained owners once, inside the provider's admitted turn. */
   async reconcile(
     operation: string,
     signal?: AbortSignal,
   ): Promise<AnalysisOutputError | undefined> {
-    await awaitPredecessor(this.#tail, operation, signal);
     const recovered = await this.#retryCleanup();
     if (signal?.aborted)
       throw new AnalysisCancelledError(operation, { cause: signal.reason });
@@ -648,42 +648,8 @@ export class AdbUiRunner {
     this.#pending.delete(request.requestId);
   }
 
+  /** Execute only after the provider owns the turn and reconciles prior work. */
   async execute(
-    request: AdbUiRequest,
-    selectedBinary: string,
-    client: z.infer<typeof adbClientIdentitySchema>,
-    provider: ProviderIdentity,
-    signal?: AbortSignal,
-  ): Promise<Result<AnalysisExecution, AnalysisError>> {
-    const predecessor = this.#tail;
-    let release!: () => void;
-    this.#tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    try {
-      await awaitPredecessor(predecessor, request.operation, signal);
-    } catch (cause) {
-      void predecessor.then(release);
-      return err(
-        cause instanceof AnalysisError
-          ? cause
-          : new AnalysisCancelledError(request.operation, { cause }),
-      );
-    }
-    try {
-      return await this.#execute(
-        request,
-        selectedBinary,
-        client,
-        provider,
-        signal,
-      );
-    } finally {
-      release();
-    }
-  }
-
-  async #execute(
     request: AdbUiRequest,
     selectedBinary: string,
     client: z.infer<typeof adbClientIdentitySchema>,
@@ -698,21 +664,8 @@ export class AdbUiRunner {
     // recovery attaches to whichever error this request actually produced.
     let delivered = false;
     let returned: AnalysisError | undefined;
-    let reportedRecoveredActionId: string | undefined;
     let interruptedBeforeActionSubmission: AnalysisCancelledError | undefined;
     try {
-      const recovered = await this.#retryCleanup();
-      const recoveredAction =
-        request.operation === "perform_adb_ui_action"
-          ? (this.#unknownActionOutcome ??
-            recovered.find(
-              ({ operation }) => operation === "perform_adb_ui_action",
-            ))
-          : undefined;
-      if (recoveredAction !== undefined) {
-        reportedRecoveredActionId = recoveredAction.requestId;
-        throw this.#recoveredActionError(request.operation, recoveredAction);
-      }
       if (signal?.aborted)
         throw new AnalysisCancelledError(request.operation, {
           cause: signal.reason,
@@ -1067,8 +1020,6 @@ export class AdbUiRunner {
     retainCompleted();
     delivered = true;
     returned = primary;
-    if (reportedRecoveredActionId !== undefined)
-      this.#recoveredActionOutcomes.delete(reportedRecoveredActionId);
     return err(primary);
   }
 

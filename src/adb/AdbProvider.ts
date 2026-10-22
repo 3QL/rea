@@ -19,6 +19,7 @@ import type {
   ExecutionOptions,
   ProviderAvailability,
 } from "../application/AnalysisProvider.js";
+import { awaitPredecessor } from "../application/awaitPredecessor.js";
 import { providerConfigurationRefusal } from "../domain/providerConfigurationRefusal.js";
 import {
   createAnalysisExecution,
@@ -869,7 +870,8 @@ export class AdbProvider {
   >();
   readonly #pendingOutputDirectoryCleanup =
     new Set<PendingOutputDirectoryCleanup>();
-  readonly #activeOperations = new Set<Promise<void>>();
+  /** All accepted device work, including discovery and finalization, has one owner. */
+  #tail: Promise<void> = Promise.resolve();
   #closing = false;
   #closePromise: Promise<void> | undefined;
   #outputCleanupPromise: Promise<void> | undefined;
@@ -921,7 +923,7 @@ export class AdbProvider {
     this.#closing = true;
     if (this.#closePromise !== undefined) return this.#closePromise;
     const closing = (async () => {
-      await Promise.all(this.#activeOperations);
+      await this.#tail;
       const failures: unknown[] = [];
       const failedLeases = new Set<AnalysisCleanupLease>();
       let allFailuresHaveExactLeaseOwners = true;
@@ -1290,13 +1292,17 @@ export class AdbProvider {
   ): Promise<Result<AnalysisExecution, AnalysisError>> {
     if (this.#closing)
       return err(new AnalysisCancelledError(request.operation));
+    const predecessor = this.#tail;
     let release!: () => void;
-    const active = new Promise<void>((resolve) => {
+    const completed = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#activeOperations.add(active);
+    // Reserve before the first await. Even if this caller abandons its wait,
+    // its successor must still join the predecessor, not overtake it.
+    this.#tail = predecessor.then(() => completed);
     try {
       try {
+        await awaitPredecessor(predecessor, request.operation, options?.signal);
         // Retained UI work can still affect the device. Reconcile it before
         // any later operation, not only before another UI request or shutdown.
         const recovered = await this.#ui.reconcile(
@@ -1346,7 +1352,6 @@ export class AdbProvider {
       }
       return await this.#executeOperation(request, options);
     } finally {
-      this.#activeOperations.delete(active);
       release();
     }
   }

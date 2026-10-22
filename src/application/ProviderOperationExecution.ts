@@ -88,7 +88,9 @@ export const executeProviderOperation = async <
     projection?.parameters?.(request.data, execution) ?? request.data.input,
     execution,
     confidence,
-    projection?.authority?.(request.data),
+    projection?.authority === undefined
+      ? undefined
+      : { authority: projection.authority(request.data) },
   );
   return completeProviderEvidence(evidence, options?.signal);
 };

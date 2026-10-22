@@ -474,7 +474,7 @@ it("exports recovered UI action Evidence recorded from a failed action", async (
       identity,
     ),
     "observed",
-    "controlled-replay",
+    { authority: "controlled-replay" },
   );
   const provider = adbProvider(async (request) => {
     if (request.operation !== "perform_adb_ui_action")

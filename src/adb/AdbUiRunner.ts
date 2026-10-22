@@ -1025,7 +1025,7 @@ export class AdbUiRunner {
         adbEvidenceParameters(request, recovered.result),
         recovered,
         "observed",
-        "controlled-replay",
+        { authority: "controlled-replay" },
       );
       (returned ?? primary).retainPartialObservation(evidence);
       if (delivered && !owned.lateEvidenceRecorded) {

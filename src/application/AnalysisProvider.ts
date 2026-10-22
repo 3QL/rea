@@ -12,6 +12,7 @@ import type { Result } from "../domain/result.js";
 import {
   createEvidence,
   type Evidence,
+  type EvidenceCreationOptions,
   type EvidenceLocation,
   type EvidenceSubjectTarget,
 } from "../domain/evidence.js";
@@ -146,7 +147,9 @@ export const createAnalysisExecutionEvidence = (
   input: unknown,
   execution: AnalysisExecution,
   confidence: "observed" | "derived",
-  authority?: Evidence["authority"],
+  options?: EvidenceCreationOptions & {
+    readonly authority?: Evidence["authority"];
+  },
 ): Evidence =>
   createEvidence(
     execution.subject === undefined
@@ -167,8 +170,11 @@ export const createAnalysisExecutionEvidence = (
         : { relationshipCoverage: execution.relationshipCoverage }),
       locations: execution.locations,
       confidence,
-      ...(authority === undefined ? {} : { authority }),
+      ...(options?.authority === undefined
+        ? {}
+        : { authority: options.authority }),
     },
+    options,
   );
 
 /** Provider-neutral application capability for one analysis operation. */

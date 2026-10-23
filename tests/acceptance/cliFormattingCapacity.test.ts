@@ -8,10 +8,8 @@ import { buildManagedPeFixture } from "../../src/dotnet/ManagedPe.fixture.js";
 import { analysisErrorProjectionSchema } from "../../src/contracts/errorSchemas.js";
 import { workspaceCliTest } from "../support/cli/workspaceCliFixture.js";
 
-// Exercise the real dispatcher with an authored capacity failure at each owner:
-// REA formats Markdown; Incur still formats delegated human output. Locate the
-// owning functions in the emitted syntax, including REA's bundled runtime.
-// No engine-sized document or native target execution is needed.
+// Exercise the real dispatcher and pinned formatter with an authored capacity
+// failure. No engine-sized document or native target execution is needed.
 const formatterFailure = `
   if (fmt !== "json" && fmt !== "jsonl" &&
       (value?.operation === "inspect_managed_artifact" ||
@@ -22,60 +20,47 @@ const formatterFailure = `
     throw new RangeError("Invalid string length");
   }
 `;
-const formatterCapacityHook = `data:text/javascript,${encodeURIComponent(`
+const incurCapacityHook = `data:text/javascript,${encodeURIComponent(`
 import { registerHooks } from "node:module";
-import { parse } from ${JSON.stringify(import.meta.resolve("@babel/parser"))};
 registerHooks({
   load(url, context, next) {
-    const pathname = new URL(url).pathname;
-    const name = pathname.endsWith("/incur/dist/Formatter.js")
-      ? "format"
-      : pathname.includes("/dist/cli-runtime/")
-        ? "formatCliOutput"
-        : undefined;
     const loaded = next(url, context);
-    if (name === undefined) return loaded;
+    if (!url.endsWith("/incur/dist/Formatter.js")) return loaded;
     const source = String(loaded.source);
-    if (!source.includes(name)) return loaded;
-    const functions = [];
-    const visit = (node) => {
-      if (node === null || typeof node !== "object") return;
-      if (node.type === "FunctionDeclaration" && node.id?.name === name)
-        functions.push(node);
-      if (node.type === "AssignmentExpression" &&
-          node.left.type === "Identifier" && node.left.name === name &&
-          node.right.type === "ArrowFunctionExpression")
-        functions.push(node.right);
-      for (const child of Object.values(node)) {
-        if (Array.isArray(child)) child.forEach(visit);
-        else visit(child);
-      }
-    };
-    visit(parse(source, { sourceType: "module" }).program);
-    if (functions.length === 0) return loaded;
-    if (functions.length !== 1) throw new Error("Ambiguous formatter owner: " + name);
-    const fn = functions[0];
-    const parameters = fn.params.map((parameter) =>
-      parameter.type === "AssignmentPattern" ? parameter.left : parameter);
-    if (parameters.length !== 2 || parameters.some((parameter) => parameter.type !== "Identifier"))
-      throw new Error("Formatter parameter boundary changed: " + name);
-    const failure = "((value, fmt) => {" + ${JSON.stringify(formatterFailure)} +
-      "})(" + parameters.map((parameter) => parameter.name).join(",") + ");";
-    const body = fn.body;
-    const replacement = body.type === "BlockStatement"
-      ? "{" + failure + source.slice(body.start + 1, body.end)
-      : "{" + failure + "return (" + source.slice(body.start, body.end) + ");}";
-    return {
-      ...loaded,
-      source: source.slice(0, body.start) + replacement + source.slice(body.end),
-    };
+    const signature = "export function format(value, fmt = 'toon') {";
+    if (!source.includes(signature)) throw new Error("Pinned formatter boundary changed");
+    return { ...loaded, source: source.replace(signature, signature + ${JSON.stringify(formatterFailure)}) };
   },
 });
 `)}`;
 
-for (const scenario of [
+// REA owns Markdown rendering. Fail one scalar's string materialization in the
+// CLI child, restoring String before the recovery document uses that formatter.
+// This does not depend on generated bundle names or compiled function text.
+const markdownCapacityHook = `data:text/javascript,${encodeURIComponent(`
+globalThis.String = new Proxy(String, {
+  apply(target, receiver, args) {
+    if (["inspect_managed_artifact", "target_unavailable"].includes(args[0])) {
+      globalThis.String = target;
+      process.stderr.write("REA_AUTHORED_FORMAT_CAPACITY\\n");
+      throw new RangeError("Invalid string length");
+    }
+    return Reflect.apply(target, receiver, args);
+  },
+});
+`)}`;
+
+type FormattingScenario = {
+  readonly name: string;
+  readonly arguments: readonly string[];
+  readonly full: boolean;
+  readonly format?: "yaml" | "md";
+  readonly human?: boolean;
+};
+
+const scenarios: readonly FormattingScenario[] = [
   { name: "default TOON", arguments: [], full: false },
-  { name: "human TOON", arguments: [], full: false },
+  { name: "human TOON", arguments: [], full: false, human: true },
   { name: "full TOON", arguments: ["--full-output"], full: true },
   { name: "TOON token count", arguments: ["--token-count"], full: false },
   { name: "TOON token window", arguments: ["--token-limit", "3"], full: false },
@@ -84,14 +69,29 @@ for (const scenario of [
     arguments: ["--full-output", "--token-limit", "3"],
     full: true,
   },
-  { name: "YAML", arguments: ["--format", "yaml"], full: false },
+  { name: "YAML", format: "yaml", arguments: [], full: false },
   {
     name: "full YAML",
-    arguments: ["--format", "yaml", "--full-output"],
+    format: "yaml",
+    arguments: ["--full-output"],
     full: true,
   },
-  { name: "Markdown", arguments: ["--format", "md"], full: false },
-] as const)
+  { name: "Markdown", format: "md", arguments: [], full: false },
+  {
+    name: "full Markdown",
+    format: "md",
+    arguments: ["--full-output"],
+    full: true,
+  },
+  {
+    name: "Markdown token window",
+    format: "md",
+    arguments: ["--token-limit", "3"],
+    full: false,
+  },
+];
+
+for (const scenario of scenarios)
   for (const outcome of ["success", "failure"] as const)
     workspaceCliTest(
       `${scenario.name} returns a typed formatting constraint after ${outcome}`,
@@ -103,14 +103,15 @@ for (const scenario of [
           process.execPath,
           [
             "--import",
-            scenario.name === "human TOON"
+            scenario.human
               ? `data:text/javascript,${encodeURIComponent('Object.defineProperty(process.stdout, "isTTY", { value: true });')}`
               : "data:text/javascript,",
             "--import",
-            formatterCapacityHook,
+            scenario.format === "md" ? markdownCapacityHook : incurCapacityHook,
             resolve("scripts/rea.mjs"),
             "inspect-managed-artifact",
             target,
+            ...(scenario.format ? ["--format", scenario.format] : []),
             ...scenario.arguments,
           ],
           { cwd: workspace.root, env: { PATH: process.env.PATH ?? "" } },
@@ -124,7 +125,16 @@ for (const scenario of [
         expect(result.stdout).not.toContain("UNKNOWN");
         if (outcome === "failure")
           expect(result.stdout).toContain("target_unavailable");
-        if (scenario.name.includes("YAML")) {
+        if (scenario.format === "md" && scenario.full) {
+          expect(result.stdout).toMatch(/^## ok\n\nfalse$/m);
+          expect(result.stdout).toMatch(
+            /^## error\.code\n\nresource_constraint$/m,
+          );
+          expect(result.stdout).toMatch(
+            /^## meta\n\n(?:\|[^\n]*\|\n)*\| command +\| inspect-managed-artifact +\|$/m,
+          );
+        }
+        if (scenario.format === "yaml") {
           const document = parseYaml(result.stdout);
           const error = scenario.full ? document.error : document;
           expect(analysisErrorProjectionSchema.parse(error)).toMatchObject({
@@ -151,7 +161,7 @@ workspaceCliTest.skipIf(process.platform === "win32")(
       process.execPath,
       [
         "--import",
-        formatterCapacityHook,
+        incurCapacityHook,
         resolve("scripts/rea.mjs"),
         "inspect-managed-artifact",
         workspace.path("missing.dll"),

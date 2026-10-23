@@ -12,6 +12,7 @@ import {
   compareManagedMemberPaths,
 } from "../../../../src/application/managed/ManagedMemberComparisonService.js";
 import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
+import type { BinaryTarget } from "../../../../src/domain/binaryTargetTypes.js";
 import { managedMemberComparisonResultSchema } from "../../../../src/domain/managed/managedMemberComparison.js";
 import { readManagedMemberEvidence } from "../../../../src/domain/managed/managedMemberComparisonMatch.js";
 import { createEvidence } from "../../../../src/domain/evidence.js";
@@ -30,6 +31,23 @@ import {
 } from "../../../../src/dotnet/ManagedSnapshot.js";
 import * as boundedFileBytes from "../../../../src/process/BoundedFileBytes.js";
 import { buildManagedMemberCapacityFixture } from "../../../fixtures/managedMemberCapacity.js";
+
+// Target admission also owns file descriptors. Resolve it before injecting the
+// snapshot-specific close failure, so that fault still reaches its named owner.
+const resolvedComparisonTargets = async (paths: readonly string[]) => {
+  const targets = new Map<string, BinaryTarget>();
+  for (const path of paths) {
+    const target = await parseBinaryTarget(path);
+    if (!target.ok) throw target.error;
+    targets.set(path, target.value);
+  }
+  return async (path: string) => {
+    const target = targets.get(path);
+    if (target === undefined)
+      throw new Error(`Unmodeled comparison target: ${path}`);
+    return { ok: true as const, value: target };
+  };
+};
 
 it("keeps missing members unknown when the opposite inspection retains only types", async () => {
   const directory = await createTestTempDirectory(
@@ -333,9 +351,9 @@ describe("managed member comparison of nested types", () => {
     // from TypeDef 4 on the left into TypeDef 5 on the right.
     expect(pairs(compare(original, swapped))).toEqual({
       methods: [
-        ["0x06000001", "0x06000002", "unknown", "exact-il-signature", "exact"],
-        ["0x06000002", "0x06000001", "unknown", "exact-il-signature", "exact"],
-        ["0x06000003", "0x06000003", "unknown", "exact-il-signature", "exact"],
+        ["0x06000001", "0x06000002", "changed", "exact-il-signature", "exact"],
+        ["0x06000002", "0x06000001", "changed", "exact-il-signature", "exact"],
+        ["0x06000003", "0x06000003", "changed", "exact-il-signature", "exact"],
       ],
       fields: [
         ["0x04000001", "0x04000002", "unchanged", "field-signature", "exact"],
@@ -365,10 +383,10 @@ describe("managed member comparison of nested types", () => {
     expect(
       comparison.methods.slice(0, 2).map(({ dimensions }) => dimensions),
     ).toEqual([
-      ["cil", "availability"],
-      ["cil", "availability"],
+      ["field-target", "cil", "availability"],
+      ["field-target", "cil", "availability"],
     ]);
-    expect(comparison.summary).toMatchObject({ changed: 2 });
+    expect(comparison.summary).toMatchObject({ changed: 3 });
   });
 
   it("retains explicitly limited bare names for historical observations", () => {
@@ -580,7 +598,12 @@ describe("managed call-target comparison", () => {
       (edges) =>
         edges.map((edge, index) =>
           index === 1
-            ? { ...edge, target_name: null, target_declaring_type: null }
+            ? {
+                ...edge,
+                target_name: null,
+                target_declaring_type: null,
+                target_identity_sha256: null,
+              }
             : edge,
         ),
     );
@@ -816,6 +839,10 @@ describe("managed comparison snapshot admission and cleanup", () => {
     const rightPath = join(directory, "right.dll");
     await writeFile(leftPath, buildManagedPeFixture());
     await writeFile(rightPath, buildManagedPeFixture());
+    const resolveTarget = await resolvedComparisonTargets([
+      leftPath,
+      rightPath,
+    ]);
     const resources = new ArtifactResourceScope();
     const originalClose = OwnedFileHandle.prototype.close;
     const owners: OwnedFileHandle[] = [];
@@ -831,7 +858,7 @@ describe("managed comparison snapshot admission and cleanup", () => {
     try {
       const result = await compareManagedMemberPaths(
         { leftPath, rightPath },
-        {},
+        { resolveTarget },
         resources,
       );
 
@@ -852,6 +879,10 @@ describe("managed comparison snapshot admission and cleanup", () => {
     const rightPath = join(directory, "right.dll");
     await writeFile(leftPath, buildManagedPeFixture());
     await writeFile(rightPath, buildManagedPeFixture());
+    const resolveTarget = await resolvedComparisonTargets([
+      leftPath,
+      rightPath,
+    ]);
     const resources = new ArtifactResourceScope();
     const cleanupCause = new Error("injected persistent close failure");
     const owners: OwnedFileHandle[] = [];
@@ -865,7 +896,7 @@ describe("managed comparison snapshot admission and cleanup", () => {
     try {
       result = await compareManagedMemberPaths(
         { leftPath, rightPath },
-        {},
+        { resolveTarget },
         resources,
       );
       expect(result.ok).toBe(false);

@@ -104,11 +104,13 @@ await withCommands((run, signal, settleCommands) =>
         return observed;
       };
       for (const kind of ["key_event", "drag"]) {
-        for (const [mode, timeout] of [
+        const modes = [
           ["cancelled", 11001],
           ["timeout", 11002],
           ["control", 10000],
-        ]) {
+          ...(kind === "key_event" ? [["unfocused", 11003]] : []),
+        ];
+        for (const [mode, timeout] of modes) {
           await state("reset");
           const selected = await select(
             kind === "drag" ? "drag_source" : "entry",
@@ -133,6 +135,20 @@ await withCommands((run, signal, settleCommands) =>
               destination_id: destination.normalized_result.matches[0].id,
             };
           }
+          if (mode === "unfocused") {
+            const window = selected.snapshot.windows.find(
+              (window) => window.id === selected.matches[0].window_id,
+            );
+            assert.equal(window?.active, true);
+            assert.equal(window.focused, true);
+            await retain("focus-probe", {
+              captured_window: window,
+              masked_input_focus: false,
+              real_active_state_unchanged: true,
+              limitation:
+                "Only the producer's input-focus read is masked; this does not reproduce native touch-exploration routing.",
+            });
+          }
           const reply = await client.callTool(
             { name: "perform_adb_ui_action", arguments: input },
             { signal, timeout: 60000 },
@@ -152,8 +168,10 @@ await withCommands((run, signal, settleCommands) =>
             if (kind === "drag") assert.equal(observed.drops, 1);
           } else if (
             reply.isError !== true ||
-            data.error?.code !==
-              (mode === "timeout" ? "provider_timeout" : "cancelled") ||
+            (mode === "unfocused"
+              ? data.error?.details?.reason !== "focus_changed"
+              : data.error?.code !==
+                (mode === "timeout" ? "provider_timeout" : "cancelled")) ||
             count !== 0 ||
             observed.drops !== 0
           ) {
@@ -181,5 +199,5 @@ assert.deepEqual(
   "Dispatch-guard verification failed; retained observations show the refusal or input mismatch",
 );
 console.log(
-  "Dispatch guards: cancelled/expired key and drag requests sent no input; non-interrupted controls and fixture cleanup passed",
+  "Dispatch guards: cancelled/expired inputs and an input-unfocused key window sent no input; focused controls and fixture cleanup passed",
 );

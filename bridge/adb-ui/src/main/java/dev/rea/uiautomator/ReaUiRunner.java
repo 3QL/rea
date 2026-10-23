@@ -641,19 +641,20 @@ public final class ReaUiRunner extends Instrumentation {
             throw new Refusal("invalid_request", "Key code is unsupported by this Android version");
           if (snapshot.display != 0)
             throw new Refusal("unsupported", "UI Automator key events target the default display");
-          boolean focused = false;
+          // Accessibility activity does not establish keyboard input routing.
+          boolean inputFocused = false;
           ByWindowSelector keyScope =
               By.Window.pkg(snapshot.packageName).displayId(snapshot.display);
           if (snapshot.windowFilter != null) keyScope.id(snapshot.windowFilter);
           for (UiWindow window : device.findWindows(keyScope)) {
-            if (!window.isFocused() && !window.isActive()) continue;
+            if (!window.isFocused()) continue;
             for (int i = 0; i < snapshot.windows.length(); i++)
-              if (snapshot.windows.getJSONObject(i).getInt("id") == window.getId()) focused = true;
+              if (snapshot.windows.getJSONObject(i).getInt("id") == window.getId())
+                inputFocused = true;
           }
-          if (!focused)
+          if (!inputFocused)
             throw new Refusal(
-                "focus_changed",
-                "No captured window in the requested scope is still active or focused");
+                "focus_changed", "No captured window in the requested scope still has input focus");
           call.check();
           attempted = true;
           if (!device.pressKeyCode(code, action.optInt("meta_state", 0)))

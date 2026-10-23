@@ -91,16 +91,16 @@ rea wait-for-adb-ui '{"serial":"emulator-5554","package":"com.example.app","sele
 
 Replace the example IDs with the actual discovery result. The primitives are:
 
-| `action.kind` | Additional fields                 | Meaning                                                              |
-| ------------- | --------------------------------- | -------------------------------------------------------------------- |
-| `tap`         | —                                 | Click the selected visible element                                   |
-| `double_tap`  | —                                 | Two clicks on the selected element                                   |
-| `long_press`  | —                                 | UI Automator long click                                              |
-| `set_text`    | `text`, optional `sensitive`      | Accessibility text replacement; empty text clears it                 |
-| `scroll`      | `direction`, `percent`            | Scroll an observed scrollable control                                |
-| `swipe`       | `direction`, `percent`            | Swipe inside the selected element                                    |
-| `drag`        | `destination_id`                  | Drag to another observed element in the same window                  |
-| `key_event`   | `key_code`, optional `meta_state` | Send a key to the foreground package on display 0; omit `element_id` |
+| `action.kind` | Additional fields                 | Meaning                                                                                                         |
+| ------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `tap`         | —                                 | Click the selected visible element                                                                              |
+| `double_tap`  | —                                 | Two clicks on the selected element                                                                              |
+| `long_press`  | —                                 | UI Automator long click                                                                                         |
+| `set_text`    | `text`, optional `sensitive`      | Accessibility text replacement; empty text clears it                                                            |
+| `scroll`      | `direction`, `percent`            | Scroll an observed scrollable control                                                                           |
+| `swipe`       | `direction`, `percent`            | Swipe inside the selected element                                                                               |
+| `drag`        | `destination_id`                  | Drag to another observed element in the same window                                                             |
+| `key_event`   | `key_code`, optional `meta_state` | Send a key only while a captured window in the selected package has input focus on display 0; omit `element_id` |
 
 Directions are `up`, `down`, `left` or `right`; percent is greater than zero and
 at most one. Before dispatch, refresh checks compare all captured node facts, rejecting changed
@@ -242,3 +242,7 @@ Foreground and action focus checks use the selected display/window scope.
 focused; a package active on another display is not substituted. Element actions
 revalidate the selected node's window, display and active/focused state before
 dispatch, including between double-tap clicks. Key events remain display-0 only.
+Their admission requires input focus on a captured window in that scope;
+accessibility activity alone does not establish keyboard routing. An active but
+unfocused selected window is refused before dispatch. This remains a sequential
+focus check, not an atomic guarantee against a subsequent external focus change.

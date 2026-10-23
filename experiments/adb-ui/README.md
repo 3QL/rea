@@ -59,12 +59,19 @@ The copied helper is labelled `dispatch-guard-probe`; the verifier requires that
 identity. It sets cancellation or expiry just after the real window/destination
 reads, using the modes recorded in `probe.json`, and exercises the public MCP
 action path. The native fixture's key, drag-start and drop counters must remain
-zero for interrupted requests; unchanged controls must deliver input. The source
+zero for interrupted requests; unchanged controls must deliver input. A separate
+key-only mode masks the admission-time `UiWindow.isFocused()` read to false,
+leaving the real selected window and its active state unchanged. The fixture
+must show an initially active, focused captured window, then report a
+`focus_changed` refusal and zero delivered keys under the masked read. This is
+a controlled producer-boundary regression, not a reproduction of native
+touch-exploration routing between two apps. The source
 copy and hashes make this controlled state injection reproducible. Ordinary
 runner sources are untouched by the builder. Use a freshly built primary fixture
 containing the counters and restore the ordinary helper after verification.
 The builder identifies the final key/drag dispatch checkpoints independently of
-preparation-helper signatures and requires exactly one of each. A boundary test
+preparation-helper signatures and requires exactly one of each, plus one scoped
+key-admission focus read. A boundary test
 runs the builder against the current runner source to catch producer drift.
 
 ### Password description redaction

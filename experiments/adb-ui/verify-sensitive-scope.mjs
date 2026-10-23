@@ -10,6 +10,7 @@ import {
   FIXTURE_PACKAGE,
   MIRROR_FIXTURE_PACKAGE,
   REA_CLI_PATH,
+  UI_EXPERIMENT_MCP_PATH,
   withFixture,
 } from "./fixture.mjs";
 
@@ -50,7 +51,7 @@ await withCommands(async (run, signal, settleCommands) => {
     });
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [REA_CLI_PATH, "mcp"],
+      args: [UI_EXPERIMENT_MCP_PATH],
       env: environment,
       stderr: "pipe",
     });

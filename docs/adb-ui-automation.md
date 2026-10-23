@@ -1,9 +1,16 @@
 # Android UI discovery and actions
 
-REA exposes Android UI Automator 2.4 through the same CLI/MCP ADB service. Find
-text and controls, inspect their attributes, select an element, perform one
-action, and observe the result. The runner operates outside the target app's
-process and uses its accessibility-exposed UI.
+REA exposes Android UI observation through the shared CLI/MCP ADB service: find
+text and controls, inspect attributes and wait for conditions. The operator-owned
+UI Automator runner operates outside the target app's process and observes its
+accessibility-exposed UI.
+
+**Input actions are an unshipped proposal pending a maintainer scope decision.**
+The normal MCP catalog has no `perform_adb_ui_action` tool and the normal CLI has
+no `perform-adb-ui-action` command. There is no environment or per-call opt-in.
+The action contract is bound only by the source-tree experiment under
+`experiments/adb-ui/`; its scripts and runner sources are not included in the
+published package. Observation tools do not themselves authorize mutation.
 
 ## Prepare the runner
 
@@ -11,7 +18,7 @@ Supply adb, JDK 17, Gradle 8.9, Android SDK platform 35 and build-tools 34.0.0.
 The source project pins Android Gradle Plugin 8.7.3 and UI Automator 2.4.0.
 Gradle resolves the declared AndroidX dependencies from Google Maven/Maven Central.
 
-From a source checkout or an installed package containing the bridge sources:
+Build the operator-owned runner from a source checkout:
 
 ```sh
 gradle -p bridge/adb-ui assembleDebug
@@ -38,7 +45,7 @@ operator-built runner package; the default is `dev.rea.uiautomator`. An unavaila
 runner reports its setup requirement. Use the existing app-lifecycle tools to
 launch the target application.
 
-The four UI tools own their adb processes, so an unset `REA_ADB_PATH` is
+The UI observation tools and experimental action transport own their adb processes, so an unset `REA_ADB_PATH` is
 resolved the same way the version probe resolves it: on Windows the owned
 launcher receives the absolute executable found on the captured `PATH` and
 `PATHEXT`, because the native launcher starts a drive path directly. A caller
@@ -80,13 +87,24 @@ Use `snapshot_id` with `next_offset` to page matches from that exact retained
 observation. Such pages report `freshness: retained_snapshot`, not live freshness.
 Repeat the package, display and optional window scope when using a retained ID.
 
-## Act on a selected element
+## Proposed input actions (source-tree experiment only)
 
-Use the returned snapshot and element IDs:
+This section documents the unregistered proposal, not a production CLI/MCP
+operation. The [verification workflow](../experiments/adb-ui/README.md) starts
+`node experiments/adb-ui/mcp.mjs` to bind the proposed contract explicitly. Its
+real-device checks use isolated, operator-owned fixture apps. A maintainer scope
+decision is still required before public registration or distribution.
 
-```sh
-rea perform-adb-ui-action '{"serial":"emulator-5554","package":"com.example.app","snapshot_id":"00000000-0000-4000-8000-000000000001","element_id":"7","action":{"kind":"tap"}}' --json
-rea wait-for-adb-ui '{"serial":"emulator-5554","package":"com.example.app","selector":{"text":{"value":"Saved","match":"exact"}},"condition":"present","timeout_ms":10000}' --json
+Example input for that experimental binding, using observed snapshot/element IDs:
+
+```json
+{
+  "serial": "emulator-5554",
+  "package": "com.rea.ui.probe",
+  "snapshot_id": "00000000-0000-4000-8000-000000000001",
+  "element_id": "7",
+  "action": { "kind": "tap" }
+}
 ```
 
 Replace the example IDs with the actual discovery result. The primitives are:
@@ -171,6 +189,11 @@ application state is left as-is.
   A completion too large for the transport budget is reported as a capacity
   refusal instead of being carried, and the request that owns it is still
   released, so an oversized result never holds a runner slot.
+- Host stdin handoff alone does not prove action admission. A matching runner's
+  immediate refusal (such as `busy`) stays a definitive capacity refusal even if
+  prepared-slot cleanup needs a retry. It does not report a possible mutation or
+  require a fresh inspection before the next action. A missing, malformed or
+  mismatched reply still leaves submission uncertain and retains replay safeguards.
 - Cancellation settles host commands, cancels only the owned remote request,
   waits for its work to settle and acknowledges its retained result. A separate
   five-second cleanup budget applies. Completed facts survive acknowledgement

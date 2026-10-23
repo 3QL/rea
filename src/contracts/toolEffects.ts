@@ -427,17 +427,6 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     accessesNetwork: true,
     idempotent: false,
   }),
-  perform_adb_ui_action: effects({
-    mutatesTarget: true,
-    mutatesSession: true,
-    launchesProcess: true,
-    accessesNetwork: true,
-    mutatesDevice: true,
-    changesUiState: true,
-    mayDiscardData: true,
-    executesForeignCode: true,
-    idempotent: false,
-  }),
   read_adb_setting: effects({
     mutatesSession: true,
     launchesProcess: true,

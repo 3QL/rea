@@ -9,14 +9,14 @@ import { err } from "../../../src/domain/result.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 
 it.each(["typed", "unexpected"])(
-  "preserves action facts and both failures when CLI close fails (%s)",
+  "preserves recovered action facts and both failures when CLI close fails (%s)",
   async (kind) => {
-    const operation = "perform_adb_ui_action";
+    const operation = "stop_adb_app";
     const partial = createEvidence(
       undefined,
       { id: "adb", name: "ADB fixture", version: "1" },
       {
-        operation,
+        operation: "perform_adb_ui_action",
         parameters: { serial: "emulator-5554" },
         result: {
           dispatch_attempted: true,
@@ -66,17 +66,7 @@ it.each(["typed", "unexpected"])(
     );
     let stdout = "";
     await cli.serve(
-      [
-        "perform-adb-ui-action",
-        JSON.stringify({
-          serial: "emulator-5554",
-          package: "com.example.app",
-          snapshot_id: "00000000-0000-4000-8000-000000000001",
-          element_id: "0",
-          action: { kind: "tap" },
-        }),
-        "--json",
-      ],
+      ["stop-adb-app", "emulator-5554", "com.example.app", "--json"],
       {
         env: {},
         exit() {},

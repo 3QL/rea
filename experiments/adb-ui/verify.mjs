@@ -6,7 +6,11 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import { withCommands } from "../command-scope.mjs";
-import { REA_CLI_PATH, withFixture } from "./fixture.mjs";
+import {
+  REA_CLI_PATH,
+  UI_EXPERIMENT_MCP_PATH,
+  withFixture,
+} from "./fixture.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -27,7 +31,7 @@ const env = Object.fromEntries(
 const client = new Client({ name: "adb-ui-scope-probe", version: "1" });
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [REA_CLI_PATH, "mcp"],
+  args: [UI_EXPERIMENT_MCP_PATH],
   env,
   stderr: "pipe",
 });

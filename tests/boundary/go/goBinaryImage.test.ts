@@ -359,7 +359,13 @@ it("distinguishes unsupported containers from malformed recognized images", () =
   );
   const pe = createGoBinaryFixture({ format: "pe" });
   pe.bytes.writeUInt32LE(0xfffffff0, 60);
-  expect(() => readGoBinaryImage(pe.bytes)).toThrowError(/range|truncated/i);
+  expect(() => readGoBinaryImage(pe.bytes)).toThrowError(
+    /candidate is unresolved/i,
+  );
+  const declared = createGoBinaryFixture({ format: "pe" });
+  expect(() => readGoBinaryImage(declared.bytes.subarray(0, 132))).toThrowError(
+    /range|truncated/i,
+  );
 });
 
 it("reports JVM class files as unsupported images instead of fat Mach-O containers", () => {

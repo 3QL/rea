@@ -7,7 +7,7 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 
 const JSON_COMMANDS = [
-  ["perform-adb-ui-action", "perform_adb_ui_action"],
+  ["inspect-adb-ui", "inspect_adb_ui"],
   ["inspect-analysis-view", "inspect-analysis-view"],
   ["trace-application-feature", "trace-application-feature"],
   ["trace-javascript-semantics", "trace-javascript-semantics"],

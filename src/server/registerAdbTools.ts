@@ -42,7 +42,6 @@ export const registerAdbTools = (
     toolContract("inspect_adb_ui"),
     toolContract("find_adb_ui_elements"),
     toolContract("wait_for_adb_ui"),
-    toolContract("perform_adb_ui_action"),
     toolContract("read_adb_setting"),
     toolContract("collect_adb_bugreport"),
     toolContract("resolve_adb_packages"),

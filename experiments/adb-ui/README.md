@@ -1,9 +1,15 @@
 # Android UI Automator verification
 
-The original XML-dump/input experiment has been replaced by the public
-[UI Automator contracts](../../docs/adb-ui-automation.md). The operator starts
-the source-built runner from `bridge/adb-ui/`; these fixtures exercise actual
-CLI/MCP discovery and input, using isolated emulator applications.
+Discovery and waits use the public [UI observation contracts](../../docs/adb-ui-automation.md).
+Input remains an **unshipped proposal** pending a maintainer scope decision.
+The normal CLI/MCP surface does not register it and has no opt-in switch.
+
+These verifiers explicitly start `mcp.mjs`, which adds the proposed action
+contract to a source-tree-only server using the existing runtime lifecycle.
+The operator starts the source-built runner from `bridge/adb-ui/`. Actual
+CLI/MCP observation and experimental input are checked against isolated emulator
+apps. The experimental entrypoint and runner sources are excluded from the npm
+package; these checks do not authorize public integration.
 
 ## Native Android Views
 
@@ -57,8 +63,8 @@ node experiments/adb-ui/verify-dispatch-guard.mjs --serial emulator-5554 \
 
 The copied helper is labelled `dispatch-guard-probe`; the verifier requires that
 identity. It sets cancellation or expiry just after the real window/destination
-reads, using the modes recorded in `probe.json`, and exercises the public MCP
-action path. The native fixture's key, drag-start and drop counters must remain
+reads, using the modes recorded in `probe.json`, and exercises the experimental
+MCP action binding. The native fixture's key, drag-start and drop counters must remain
 zero for interrupted requests; unchanged controls must deliver input. A separate
 key-only mode masks the admission-time `UiWindow.isFocused()` read to false,
 leaving the real selected window and its active state unchanged. The fixture

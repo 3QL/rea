@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { access, rm, writeFile } from "node:fs/promises";
+import { access, realpath, rm, writeFile } from "node:fs/promises";
 import { expect, onTestFinished } from "vitest";
 import { createFirmwareAnalysisProvider } from "../../../src/composition/firmware.js";
 import { FirmwareAnalysisService } from "../../../src/application/firmware/FirmwareAnalysisService.js";
@@ -20,6 +20,12 @@ export const firmwareFixture = async (mode = "normal", banner?: string) => {
     args: readonly string[];
   }[] = [];
   let cleanupUnverified = mode === "cleanup-failure";
+  // Admission resolves selected executables. Match those identities, not a
+  // basename: distribution alternatives may resolve /usr/bin/true to coreutils.
+  const engines = new Map([
+    [await realpath("/usr/bin/true"), "binwalk"],
+    [await realpath(process.execPath), "unblob"],
+  ]);
   const provider = createFirmwareAnalysisProvider(
     {
       ...process.env,
@@ -27,12 +33,13 @@ export const firmwareFixture = async (mode = "normal", banner?: string) => {
       REA_UNBLOB_COMMAND: process.execPath,
     },
     async (options) => {
-      const start = options.arguments.indexOf("--") + 2;
-      const args = options.arguments.slice(start);
-      const engine =
-        options.arguments[start - 1]?.endsWith("/true") === true
-          ? "binwalk"
-          : "unblob";
+      const separator = options.arguments.indexOf("--");
+      if (separator === -1)
+        throw new Error("Expected a bounded firmware producer command");
+      const [command, ...args] = options.arguments.slice(separator + 1);
+      const engine = command === undefined ? undefined : engines.get(command);
+      if (engine === undefined)
+        throw new Error(`Unmodeled firmware producer: ${String(command)}`);
       const spawned = await spawnOwnedProviderProcess({
         ...options,
         command: process.execPath,

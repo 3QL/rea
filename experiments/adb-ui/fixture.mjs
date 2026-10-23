@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { resolveAdbBinary } from "../../dist/adb/AdbConfiguration.js";
 import { snapshotAndroidTarget } from "../../dist/android/AndroidTargetSnapshot.js";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
+import { PROPOSED_ADB_UI_ACTION_CONTRACT } from "../../dist/contracts/adb/adbUiToolContracts.js";
 import { hashStableFile } from "../../dist/filesystem/StableFileHash.js";
 import { ArtifactResourceScope } from "../../dist/artifacts/ArtifactResourceScope.js";
 import { acquireFixtureLease } from "./lease.mjs";
@@ -14,6 +15,7 @@ export const REA_CLI_PATH = resolve(
   import.meta.dirname,
   "../../scripts/rea.mjs",
 );
+export const UI_EXPERIMENT_MCP_PATH = resolve(import.meta.dirname, "mcp.mjs");
 const REQUEST_MS = 120_000;
 
 /** Own the admitted APK, installation attempt and MCP session through cleanup. */
@@ -52,7 +54,11 @@ export async function withFixture(
     );
     assert.notEqual(reply.isError, true, JSON.stringify(reply));
     const text = reply.content.find((part) => part.type === "text")?.text;
-    return toolContract(name).outputSchema.parse(
+    const contract =
+      name === PROPOSED_ADB_UI_ACTION_CONTRACT.name
+        ? PROPOSED_ADB_UI_ACTION_CONTRACT
+        : toolContract(name);
+    return contract.outputSchema.parse(
       reply.structuredContent ?? JSON.parse(text),
     );
   };

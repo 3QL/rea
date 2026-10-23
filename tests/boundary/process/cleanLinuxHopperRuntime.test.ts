@@ -281,8 +281,9 @@ it.runIf(process.platform === "linux").each([
     const alternateMode = mode === "alternate launcher";
     const pythonMode = pythonOptions !== null;
     if (alternateMode) {
-      await copyFile("/usr/bin/sleep", launcher);
-      await chmod(launcher, 0o700);
+      // Some coreutils distributions reject a renamed executable. Use the
+      // selected Node binary and its real ready message, not spawn-as-readiness.
+      await symlink(process.execPath, launcher);
       await symlink(launcher, alternate);
     }
     if (pythonMode) {
@@ -304,15 +305,13 @@ it.runIf(process.platform === "linux").each([
         ? "/usr/bin/python3"
         : process.execPath;
     const arguments_ = alternateMode
-      ? ["30"]
+      ? ["-e", "setInterval(() => {}, 1000); process.send('ready');"]
       : pythonMode
         ? [...pythonOptions, helper]
         : ["-e", childCode];
-    const stdio = alternateMode
-      ? "ignore"
-      : pythonMode
-        ? ["ignore", "pipe", "ignore"]
-        : ["ignore", "ignore", "ignore", "ipc"];
+    const stdio = pythonMode
+      ? ["ignore", "pipe", "ignore"]
+      : ["ignore", "ignore", "ignore", "ipc"];
     const parentCode = `
       const { spawn } = require('node:child_process');
       const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(arguments_)}, {
@@ -325,7 +324,7 @@ it.runIf(process.platform === "linux").each([
         child.stdout?.destroy();
         child.unref();
       };
-      ${pythonMode ? "child.stdout.once('data', ready);" : `child.once(${JSON.stringify(alternateMode ? "spawn" : "message")}, ready);`}
+      ${pythonMode ? "child.stdout.once('data', ready);" : "child.once('message', ready);"}
     `;
     const { reaper, ready } = launchReapedOrphan(runId, parentCode);
     let orphanPid: number | undefined;

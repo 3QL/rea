@@ -14,6 +14,7 @@ import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { retainedEvidenceReference } from "../../fixtures/mcpRetainedEvidence.js";
 import { assertAdvertisedMcpContracts } from "./mcpContractHarness.js";
+import { registerAdbUiExperiment } from "../../fixtures/adbUiExperiment.js";
 
 const identity = { id: "adb", name: "Android Debug Bridge", version: null };
 
@@ -303,6 +304,7 @@ const adbProvider = (
 const connectAdbMcpClient = async (
   provider: AdbDeviceAnalysisPort,
   name: string,
+  proposedUiAction = false,
 ): Promise<{
   readonly client: Client;
   readonly session: ReturnType<typeof createTestBinarySession>;
@@ -314,6 +316,7 @@ const connectAdbMcpClient = async (
     { kind: "session", session },
     { adbDeviceAnalysis: provider },
   );
+  if (proposedUiAction) registerAdbUiExperiment(server, provider, session);
   onTestFinished(() => server.close());
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -352,7 +355,6 @@ it("advertises exact valid ADB schemas and records inline evidence through MCP",
     "inspect_adb_ui",
     "find_adb_ui_elements",
     "wait_for_adb_ui",
-    "perform_adb_ui_action",
     "read_adb_setting",
     "collect_adb_bugreport",
     "resolve_adb_packages",
@@ -435,6 +437,31 @@ it("rejects invalid tool input before reaching the provider", async () => {
   });
 });
 
+it("withholds the proposed UI mutation tool from the production MCP surface", async () => {
+  let calls = 0;
+  const provider = adbProvider(async () => {
+    calls++;
+    throw new Error("Unapproved UI mutation must not reach the provider");
+  });
+  const { client } = await connectAdbMcpClient(provider, "adb-scope-gate");
+  const { tools } = await client.listTools();
+  expect(tools.map(({ name }) => name)).not.toContain("perform_adb_ui_action");
+  expect(tools.map(({ name }) => name)).toContain("inspect_adb_ui");
+  await expect(
+    client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: {
+        serial: "emulator-5554",
+        package: "com.example.app",
+        snapshot_id: "00000000-0000-4000-8000-000000000002",
+        element_id: "0",
+        action: { kind: "tap" },
+      },
+    }),
+  ).rejects.toThrow("not advertised");
+  expect(calls).toBe(0);
+});
+
 it("exports recovered UI action Evidence recorded from a failed action", async () => {
   const input = {
     serial: "emulator-5554",
@@ -487,6 +514,7 @@ it("exports recovered UI action Evidence recorded from a failed action", async (
   const { client, session } = await connectAdbMcpClient(
     provider,
     "adb-recovered-evidence",
+    true,
   );
 
   const reply = await client.callTool({

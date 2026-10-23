@@ -16,6 +16,7 @@ import { parseEvidence } from "../../../../src/domain/evidence.js";
 import { AdbDeviceAnalysisService } from "../../../../src/application/adb/AdbDeviceAnalysisService.js";
 import { toolContract } from "../../../../src/contracts/toolContracts.js";
 import { createApplicationMcpHarness } from "../../../fixtures/applicationMcpHarness.js";
+import { registerAdbUiExperiment } from "../../../fixtures/adbUiExperiment.js";
 import { parseMcpToolError } from "../../../fixtures/mcpToolError.js";
 import { createDeferred } from "../../../fixtures/binarySession.js";
 import {
@@ -168,7 +169,12 @@ if (request.operation === 'ping') {
   else if(response?.state==='running') setInterval(()=>{},1000);
   else reply({state:response===null?'missing':'settled',response});
 } else {
-  if(!stream || !fs.existsSync(jobFile(request.request_id))) throw new Error('Input was not prepared');
+   if(!stream || !fs.existsSync(jobFile(request.request_id))) throw new Error('Input was not prepared');
+   if(mode.body_refusal) {
+     const encoded='REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind:'busy',reason:'Another UI request is active'}))).toString('base64');
+     console.log(encoded);
+     process.exit(0);
+   }
   if(mode.kind === 'wrong-package') snapshot.package_name = 'com.other.app';
   let result;
   if(request.operation === 'inspect_adb_ui') result={runner,snapshot:{...snapshot,nodes:[node]}};
@@ -217,6 +223,52 @@ if (request.operation === 'ping') {
       writeFile(config, JSON.stringify(next)),
   };
 }
+
+it.each([false, true])(
+  "preserves a pre-admission busy refusal and admits the next action after cleanup (cleanup offline: %s)",
+  async (cancelOffline) => {
+    const { provider, workspace, setMode } = await fixture({
+      body_refusal: true,
+      cancel_offline: cancelOffline,
+    });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    onTestFinished(async () => {
+      await setMode({});
+      await harness.close();
+    });
+    const refused = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    const error = parseMcpToolError(refused).error;
+    expect(error.code).toBe(
+      cancelOffline ? "cleanup_incomplete" : "resource_constraint",
+    );
+    expect(JSON.stringify(error)).toContain("Another UI request is active");
+    expect(JSON.stringify(error)).not.toMatch(
+      /may have completed|action_outcome|replay_safe/u,
+    );
+    await setMode({});
+    const next = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    expect(next.isError, JSON.stringify(next)).not.toBe(true);
+    await provider.close();
+    const calls = (await readFile(workspace.path("calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).operation);
+    expect(
+      calls.filter((name) => name === "perform_adb_ui_action"),
+    ).toHaveLength(2);
+    expect(calls).not.toContain("inspect_adb_ui");
+  },
+);
 
 /** Hold the producing discovery boundary; all released probes still run the real child. */
 function holdClientDiscovery() {
@@ -789,6 +841,8 @@ it("reconciles retained UI work before a non-UI call queued during discovery on 
   });
   const harness = await createApplicationMcpHarness({
     serverOptions: { adbDeviceAnalysis: provider },
+    configureServer: (server, session) =>
+      registerAdbUiExperiment(server, provider, session),
   });
   onTestFinished(async () => {
     await setMode({});
@@ -906,6 +960,10 @@ it.each([
     const { provider } = await fixture({ unsupported_reason: reason });
     const harness = await createApplicationMcpHarness({
       serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) => {
+        if (operation === "perform_adb_ui_action")
+          registerAdbUiExperiment(server, provider, session);
+      },
     });
     onTestFinished(harness.close);
     const reply = await harness.client.callTool({

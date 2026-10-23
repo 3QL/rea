@@ -4,9 +4,9 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { toolContract } from "../../dist/contracts/toolContracts.js";
+import { PROPOSED_ADB_UI_ACTION_CONTRACT } from "../../dist/contracts/adb/adbUiToolContracts.js";
 import { withCommands } from "../command-scope.mjs";
-import { REA_CLI_PATH, withFixture } from "./fixture.mjs";
+import { UI_EXPERIMENT_MCP_PATH, withFixture } from "./fixture.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -26,7 +26,7 @@ const env = Object.fromEntries(
 const client = new Client({ name: "rea-ui-node-validation", version: "1" });
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [REA_CLI_PATH, "mcp"],
+  args: [UI_EXPERIMENT_MCP_PATH],
   env,
   stderr: "pipe",
 });
@@ -198,9 +198,9 @@ await withCommands((run, signal, settleCommands) =>
       const checked = await find("toggle", { checked: true });
       const toggled = await invoke(checked, { kind: "tap" });
       assert.notEqual(toggled.reply.isError, true);
-      const toggleEvidence = toolContract(
-        "perform_adb_ui_action",
-      ).outputSchema.parse(toggled.data);
+      const toggleEvidence = PROPOSED_ADB_UI_ACTION_CONTRACT.outputSchema.parse(
+        toggled.data,
+      );
       assert.equal(toggleEvidence.normalized_result.action_completed, true);
       assert.equal(
         toggleEvidence.normalized_result.selected_element.checked,
@@ -235,7 +235,7 @@ await withCommands((run, signal, settleCommands) =>
           assert.equal(selected.matches[0].focused, false);
         const result = await invoke(selected, { kind: "double_tap" });
         assert.notEqual(result.reply.isError, true);
-        const facts = toolContract("perform_adb_ui_action").outputSchema.parse(
+        const facts = PROPOSED_ADB_UI_ACTION_CONTRACT.outputSchema.parse(
           result.data,
         ).normalized_result;
         const after = await mutate("observe");
@@ -275,7 +275,7 @@ await withCommands((run, signal, settleCommands) =>
         const selected = await find("toggle");
         const result = await invoke(selected, { kind: "double_tap" });
         assert.notEqual(result.reply.isError, true);
-        const facts = toolContract("perform_adb_ui_action").outputSchema.parse(
+        const facts = PROPOSED_ADB_UI_ACTION_CONTRACT.outputSchema.parse(
           result.data,
         ).normalized_result;
         const after = await mutate("observe");
@@ -328,9 +328,8 @@ await withCommands((run, signal, settleCommands) =>
         text: sentinel,
       });
       assert.notEqual(passwordAction.reply.isError, true);
-      const passwordEvidence = toolContract(
-        "perform_adb_ui_action",
-      ).outputSchema.parse(passwordAction.data);
+      const passwordEvidence =
+        PROPOSED_ADB_UI_ACTION_CONTRACT.outputSchema.parse(passwordAction.data);
       assert.equal(passwordEvidence.normalized_result.action_completed, true);
       assert.equal(passwordEvidence.parameters.action.text, "[redacted]");
       assert.equal(
@@ -344,9 +343,9 @@ await withCommands((run, signal, settleCommands) =>
         text: "ordinary caller text",
       });
       assert.notEqual(plainAction.reply.isError, true);
-      const plainEvidence = toolContract(
-        "perform_adb_ui_action",
-      ).outputSchema.parse(plainAction.data);
+      const plainEvidence = PROPOSED_ADB_UI_ACTION_CONTRACT.outputSchema.parse(
+        plainAction.data,
+      );
       assert.equal(
         plainEvidence.parameters.action.text,
         "ordinary caller text",

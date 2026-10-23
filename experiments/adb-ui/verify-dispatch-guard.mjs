@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { withCommands } from "../command-scope.mjs";
-import { REA_CLI_PATH, withFixture } from "./fixture.mjs";
+import { UI_EXPERIMENT_MCP_PATH, withFixture } from "./fixture.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -25,7 +25,7 @@ const environment = Object.fromEntries(
 const client = new Client({ name: "rea-ui-dispatch-guard", version: "1" });
 const transport = new StdioClientTransport({
   command: process.execPath,
-  args: [REA_CLI_PATH, "mcp"],
+  args: [UI_EXPERIMENT_MCP_PATH],
   env: environment,
   stderr: "pipe",
 });

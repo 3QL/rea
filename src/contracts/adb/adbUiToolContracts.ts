@@ -4,7 +4,11 @@ import {
 } from "../../domain/adb/adbUiAnalysis.js";
 import type { ToolContract } from "../toolContractTypes.js";
 import { evidenceResultOf } from "../toolOutputSchemaPrimitives.js";
-import { toolContractMetadata } from "../toolEffects.js";
+import {
+  annotationsFromEffects,
+  toolContractMetadata,
+  type ToolEffects,
+} from "../toolEffects.js";
 
 const scope = { serial: "emulator-5554", package: "com.example.app" };
 export const ADB_UI_TOOL_CONTRACTS = [
@@ -63,24 +67,42 @@ export const ADB_UI_TOOL_CONTRACTS = [
       },
     ],
   },
-  {
-    name: "perform_adb_ui_action",
-    ...toolContractMetadata("perform_adb_ui_action"),
-    kind: "adb-provider",
-    description:
-      "Perform one explicit Android UI primitive: tap, double tap, long press, set/clear text, scroll, swipe, drag or key event. Select an element from the retained snapshot; key events select its foreground package. Refresh and validate element facts before dispatch, rejecting stale or disabled targets. Reports dispatch acknowledgement separately from observed after-state. Actions can change app data and network state. Text travels over private stdin transport; caller-marked sensitive text and password-control text are excluded from recorded parameters.",
-    inputSchema: adbUiInputSchemas.perform_adb_ui_action,
-    outputSchema: evidenceResultOf(adbUiResultSchemas.perform_adb_ui_action),
-    examples: [
-      {
-        title: "Tap a selected UI control",
-        input: {
-          ...scope,
-          snapshot_id: "00000000-0000-4000-8000-000000000001",
-          element_id: "3",
-          action: { kind: "tap" },
-        },
-      },
-    ],
-  },
 ] as const satisfies readonly ToolContract[];
+
+const proposedActionEffects: ToolEffects = {
+  mutatesTarget: true,
+  mutatesSession: true,
+  writesFilesystem: false,
+  launchesProcess: true,
+  accessesNetwork: true,
+  mutatesDevice: true,
+  changesUiState: true,
+  mayDiscardData: true,
+  executesForeignCode: true,
+  idempotent: false,
+};
+
+/** Unregistered proposal; only the unshipped source-tree experiment binds it. */
+export const PROPOSED_ADB_UI_ACTION_CONTRACT = {
+  name: "perform_adb_ui_action",
+  title: "Proposed Android UI action",
+  effects: proposedActionEffects,
+  annotations: annotationsFromEffects(proposedActionEffects),
+  returnsTargetContent: true,
+  kind: "adb-provider",
+  description:
+    "Perform one explicit Android UI primitive: tap, double tap, long press, set/clear text, scroll, swipe, drag or key event. Select an element from the retained snapshot; key events select its foreground package. Refresh and validate element facts before dispatch, rejecting stale or disabled targets. Reports dispatch acknowledgement separately from observed after-state. Actions can change app data and network state. Text travels over private stdin transport; caller-marked sensitive text and password-control text are excluded from recorded parameters.",
+  inputSchema: adbUiInputSchemas.perform_adb_ui_action,
+  outputSchema: evidenceResultOf(adbUiResultSchemas.perform_adb_ui_action),
+  examples: [
+    {
+      title: "Tap a selected UI control",
+      input: {
+        ...scope,
+        snapshot_id: "00000000-0000-4000-8000-000000000001",
+        element_id: "3",
+        action: { kind: "tap" },
+      },
+    },
+  ],
+} as const satisfies ToolContract;

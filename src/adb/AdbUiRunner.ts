@@ -94,7 +94,8 @@ interface RemoteRequest {
   readonly socketPath: string;
   settled?: boolean;
   completion?: Reply;
-  actionSubmitted?: boolean;
+  /** Host handoff is uncertain until the matching runner answers admission. */
+  actionAdmission?: "unconfirmed" | "accepted" | "refused";
   lateEvidenceRecorded?: boolean;
   /**
    * Attach a terminal reply recovered by a later cleanup retry to the outcome
@@ -114,6 +115,10 @@ interface RecoveredActionOutcome {
   readonly windowId: number | undefined;
   readonly evidence?: Evidence;
 }
+
+const actionMayHaveDispatched = (request: RemoteRequest): boolean =>
+  request.actionAdmission === "unconfirmed" ||
+  request.actionAdmission === "accepted";
 
 /** Parse the producer's terminal record, never a substring inside Android diagnostics. */
 export const parseAdbUiReply = (
@@ -340,7 +345,7 @@ export class AdbUiRunner {
             : {
                 onInputSubmission: () => {
                   if (operation === "perform_adb_ui_action")
-                    submission.actionSubmitted = true;
+                    submission.actionAdmission = "unconfirmed";
                 },
               }),
           retainCleanup: (owner) => {
@@ -538,7 +543,7 @@ export class AdbUiRunner {
             // completion. Releasing it keeps the runner's slot available; the
             // completion itself never reached the caller.
             request.settled = true;
-            if (request.actionSubmitted) {
+            if (actionMayHaveDispatched(request)) {
               const outcome: RecoveredActionOutcome = {
                 requestId: request.requestId,
                 operation: request.operation,
@@ -569,7 +574,7 @@ export class AdbUiRunner {
               // The originating outcome may already have been returned; it still
               // owns this request's recovery until the request is forgotten.
               const evidence = request.recover?.(result.response);
-              if (request.actionSubmitted && result.response.ok) {
+              if (actionMayHaveDispatched(request) && result.response.ok) {
                 const outcome: RecoveredActionOutcome = {
                   requestId: request.requestId,
                   operation: request.operation,
@@ -788,8 +793,12 @@ export class AdbUiRunner {
         throw new AnalysisProtocolError(
           "UI runner restarted while a request was outstanding",
         );
+      if (!reply.ok && owned.actionAdmission !== undefined)
+        owned.actionAdmission = "refused";
       if (reply.ok) {
         z.strictObject({ state: z.literal("accepted") }).parse(reply.result);
+        if (owned.actionAdmission !== undefined)
+          owned.actionAdmission = "accepted";
         const deadline = AbortSignal.timeout(request.input.timeout_ms + 10000);
         const pollSignal =
           signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
@@ -907,7 +916,8 @@ export class AdbUiRunner {
               );
     }
     if (
-      owned?.actionSubmitted &&
+      owned !== undefined &&
+      actionMayHaveDispatched(owned) &&
       owned.completion === undefined &&
       observed === undefined
     ) {
@@ -937,6 +947,9 @@ export class AdbUiRunner {
     // secondary failure instead of being dropped with the request.
     const retainCompletion = (reply: Reply): Evidence | undefined => {
       if (owned === undefined) return undefined;
+      // Cancelling the prepared slot releases ownership; it cannot supersede
+      // the authoritative body refusal or create an uncertain action outcome.
+      if (owned.actionAdmission === "refused") return undefined;
       if (
         !delivered &&
         interruptedBeforeActionSubmission !== undefined &&

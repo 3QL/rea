@@ -1,5 +1,9 @@
 # REA UI Automator runner
 
+Source-tree proposal: runner sources are not distributed in the npm package.
+Public CLI/MCP tools expose observations and waits only; input is bound by the
+unshipped `experiments/adb-ui/mcp.mjs` verifier pending maintainer scope approval.
+
 This source-built, operator-owned instrumentation APK supplies the Android UI
 backend described in [the UI guide](https://github.com/morluto/rea/blob/main/docs/adb-ui-automation.md). It pins
 AndroidX UI Automator 2.4.0 and uses its public window, node and gesture APIs.

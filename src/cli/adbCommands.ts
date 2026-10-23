@@ -72,11 +72,6 @@ export const registerAdbCommands = (
       "wait_for_adb_ui",
       "Wait for an Android UI condition within a deadline",
     ],
-    [
-      CLI_COMMANDS.performAdbUiAction,
-      "perform_adb_ui_action",
-      "Perform one explicit action on a selected Android UI element",
-    ],
   ] as const) {
     cli.command(name, {
       description,

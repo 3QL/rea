@@ -11,9 +11,10 @@ The adb client may start its local server on first device query; that is adb
 client behavior, recorded in the tool result when observed.
 `inspect_adb_client` probes only the binary and never contacts the server.
 
-[UI discovery and interaction](adb-ui-automation.md) use a separately installed,
-caller-started UI Automator runner: `inspect_adb_ui`, `find_adb_ui_elements`,
-`wait_for_adb_ui` and `perform_adb_ui_action` share the same CLI/MCP service.
+[UI discovery](adb-ui-automation.md) uses a separately installed, caller-started
+UI Automator runner. The normal CLI/MCP tools are `inspect_adb_ui`,
+`find_adb_ui_elements` and `wait_for_adb_ui`. Input actions remain an unshipped
+source-tree experiment pending a maintainer scope decision.
 
 ## Supply tools
 

@@ -73,6 +73,45 @@ cliTest("reports BEAM exports through the public CLI", async ({ cli }) => {
 });
 
 cliTest(
+  "decodes the last atom table while retaining every chunk occurrence",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-beam-repeated-atoms-");
+    const original = erlangBeamOtp29Fixture();
+    const decoy = oneAtomBeam(0).subarray(12);
+    const repeated = Buffer.concat([
+      original.subarray(0, 12),
+      decoy,
+      original.subarray(12),
+    ]);
+    repeated.writeUInt32BE(repeated.length - 8, 4);
+    const path = join(root, "repeated.beam");
+    await writeFile(path, repeated);
+    const result = await cli.run({
+      arguments: ["inspect-erlang-beam", path, "--json"],
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    const report = toolContract("inspect_erlang_beam").outputSchema.parse(
+      result.json,
+    ).normalized_result;
+    expect(report.module).toBe("rea_beam_fixture");
+    expect(report.exports).toContainEqual({
+      function_index: 2,
+      function: "hello",
+      arity: 1,
+      label: 2,
+    });
+    const atomChunks = report.chunks.filter(({ name }) => name === "AtU8");
+    expect(atomChunks).toHaveLength(2);
+    expect(atomChunks[0]?.payload.sha256).not.toBe(
+      atomChunks[1]?.payload.sha256,
+    );
+    expect(atomChunks[0]?.payload.location.offset).toBe(20);
+    expect(atomChunks[1]?.payload.location.offset).toBe(20 + decoy.length);
+    expect(report.coverage.status).toBe("complete");
+  },
+);
+
+cliTest(
   "inspects an OTP 29 BEAM with an extended compact atom length and preserves source identity",
   async ({ cli }) => {
     const root = await createTestTempDirectory("rea-beam-extended-atom-");
@@ -145,6 +184,49 @@ cliTest(
     );
     expect(padded.normalized_result.artifact.sha256).not.toBe(
       clean.normalized_result.artifact.sha256,
+    );
+  },
+);
+
+cliTest(
+  "inspects the declared BEAM form while retaining trailing bytes in artifact identity",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-beam-trailer-");
+    const controlPath = join(root, "control.beam");
+    const trailingPath = join(root, "trailing.beam");
+    const formBytes = erlangBeamOtp29Fixture();
+    const trailer = Buffer.from("note");
+    await writeFile(controlPath, formBytes);
+    await writeFile(trailingPath, Buffer.concat([formBytes, trailer]));
+
+    const inspect = async (path: string) => {
+      const result = await cli.run({
+        arguments: ["inspect-erlang-beam", path, "--json"],
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      return toolContract("inspect_erlang_beam").outputSchema.parse(
+        result.json,
+      );
+    };
+    const control = await inspect(controlPath);
+    const trailing = await inspect(trailingPath);
+    expect(trailing.normalized_result.form).toEqual(
+      control.normalized_result.form,
+    );
+    expect(trailing.normalized_result.chunks).toEqual(
+      control.normalized_result.chunks,
+    );
+    expect(trailing.normalized_result.exports).toEqual(
+      control.normalized_result.exports,
+    );
+    expect(trailing.normalized_result.artifact.bytes).toBe(
+      formBytes.length + trailer.length,
+    );
+    expect(trailing.normalized_result.artifact.sha256).not.toBe(
+      control.normalized_result.artifact.sha256,
+    );
+    expect(trailing.normalized_result.form.location.bytes).toBe(
+      formBytes.length,
     );
   },
 );

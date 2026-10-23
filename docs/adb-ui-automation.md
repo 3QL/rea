@@ -217,14 +217,14 @@ application state is left as-is.
   is local to that provider instance; it does not lock other REA processes or
   external ADB clients.
 - One-shot CLI close failures preserve the original operation error and any
-  completed/partial observation, so an acknowledgement failure does not hide
-  a dispatched action.
+  completed/partial observation. The experimental action binding retains the
+  same provider-owned outcome and cleanup diagnostics.
 - The runner's private socket is removed when the runner stops. A setup failure,
   including a rejected receiver registration, closes the socket before the
   instrumentation reports the failure, so the next launch does not refuse a
   leftover socket path.
 - A request owns its recovery until the runner forgets it. If a cleanup retry,
-  including the one-shot CLI's `close`, reaches the runner after the outcome was
+  including provider `close`, reaches the runner after the outcome was
   already returned, the recovered terminal reply is attached to that same error:
   completed facts become its Evidence, and a recovered refusal replaces an
   undecided cancellation or is retained as a secondary failure. The request is
@@ -243,10 +243,11 @@ uninstall; request payloads are not stored in that filesystem entry.
 
 ## Verification
 
-The public workflow is exercised by `experiments/adb-ui/verify.mjs` against a
-source-built probe: text/button discovery, duplicate-label paging, clickable
-ancestors, eight primitives, Unicode, sensitive text, stale/disabled refusals,
-waits, cancellation, CLI/MCP snapshot parity and fixture cleanup. The Compose
+`experiments/adb-ui/verify.mjs` exercises public observation tools and the
+unshipped action binding against a source-built probe: text/button discovery,
+duplicate-label paging, clickable ancestors, eight primitives, Unicode, sensitive
+text, stale/disabled refusals, waits, cancellation, observation CLI/MCP snapshot
+parity and fixture cleanup. The Compose
 fixture and `verify-compose.mjs` exercise virtual/merged accessibility nodes.
 Provider-boundary tests separately exercise malformed replies, request identity,
 unavailable runners, cancellation and acknowledgement/cleanup failure.

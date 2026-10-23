@@ -309,7 +309,8 @@ const receipt = await withCommands((run, signal, settleCommands) =>
         output_directory: join(output, "screen"),
       });
       return {
-        scope: "public UI Automator CLI/MCP verification",
+        scope:
+          "public UI observation CLI/MCP and unshipped action verification",
         serial,
         package: packageName,
         fixture,

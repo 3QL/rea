@@ -3,10 +3,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
   createAnalysisExecution,
-  createAnalysisExecutionEvidence,
   type AnalysisExecution,
   type ProviderIdentity,
 } from "../application/AnalysisProvider.js";
+import { createAnalysisExecutionEvidence } from "../domain/analysisObservation.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import type { Evidence } from "../domain/evidence.js";
 import {

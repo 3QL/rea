@@ -18,11 +18,11 @@ import { jsonValueSchema } from "../domain/jsonValue.js";
 import { projectInputIssues } from "../domain/inputIssueProjection.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
-import {
-  createAnalysisExecutionEvidence,
-  type AnalysisExecution,
-  type ExecutionOptions,
+import type {
+  AnalysisExecution,
+  ExecutionOptions,
 } from "./AnalysisProvider.js";
+import { createAnalysisExecutionEvidence } from "../domain/analysisObservation.js";
 
 /** Validated caller-selected request carrying its operation input. */
 export interface ProviderOperationRequest {

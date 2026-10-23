@@ -4,10 +4,8 @@ import { expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 
 import type { AdbDeviceAnalysisPort } from "../../../src/application/adb/AdbDeviceAnalysisPort.js";
-import {
-  createAnalysisExecution,
-  createAnalysisExecutionEvidence,
-} from "../../../src/application/AnalysisProvider.js";
+import { createAnalysisExecution } from "../../../src/application/AnalysisProvider.js";
+import { createAnalysisExecutionEvidence } from "../../../src/domain/analysisObservation.js";
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { err, ok } from "../../../src/domain/result.js";

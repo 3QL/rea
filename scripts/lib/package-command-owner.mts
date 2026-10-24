@@ -186,11 +186,13 @@ class PackageCommands implements PackageVerifierCommands {
     readonly launcher: (
       input: OwnedProviderProcessSpawnOptions,
     ) => Promise<SpawnedOwnedProviderProcess>,
+    closeHooks: readonly (() => Promise<void>)[],
   ) {
     this.#resourceOwner = {
       retain: (owner, resource) => this.adopt(owner, resource),
       run: (work) => this.#resources.run(work),
     };
+    for (const close of closeHooks) this.#resources.addCloseHook(close);
   }
 
   exec(
@@ -322,11 +324,14 @@ class PackageCommands implements PackageVerifierCommands {
 export async function createPackageVerifierCommands({
   workspace,
   launcher = launchPackageCommand,
+  closeHooks = [],
 }: {
   readonly workspace: PackageVerifierWorkspace;
   readonly launcher?: (
     input: OwnedProviderProcessSpawnOptions,
   ) => Promise<SpawnedOwnedProviderProcess>;
+  /** Persistent resources close with the scope, not before its next command. */
+  readonly closeHooks?: readonly (() => Promise<void>)[];
 }): Promise<PackageVerifierCommands> {
-  return new PackageCommands(workspace, launcher);
+  return new PackageCommands(workspace, launcher, closeHooks);
 }

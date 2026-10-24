@@ -84,6 +84,13 @@ cliTest(
         suffix: "",
         resolves: true,
       },
+      {
+        // A whole type-only import is erased and does not shadow the global.
+        prefix: 'import type { Worker } from "node:worker_threads";',
+        constructor: "new Worker",
+        suffix: "",
+        resolves: true,
+      },
       ...[
         ["class Worker {}", "new Worker", ""],
         ["globalThis.Worker = Fake;", "new Worker", ""],
@@ -95,11 +102,7 @@ cliTest(
         ["function start(window) {", "new window.Worker", "}"],
         ["function start(globalThis) {", "new globalThis.Worker", "}"],
         [
-          'import type { Worker } from "node:worker_threads";',
-          "new Worker",
-          "",
-        ],
-        [
+          // Inline type specifiers may retain the module's side-effect import.
           'import { type Worker } from "node:worker_threads";',
           "new Worker",
           "",

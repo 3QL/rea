@@ -1,10 +1,8 @@
-import { readFile } from "node:fs/promises";
-
-import { parse } from "@babel/parser";
 import { describe, expect, it } from "vitest";
 
 import {
   agentEvaluationPassed,
+  assertAgentEvaluationsPassed,
   summarizeFactualCorrectness,
 } from "./AgentEvaluationReport.js";
 
@@ -21,60 +19,22 @@ const routingSuccess = {
 };
 
 describe("agent evaluation release gate", () => {
-  it("rejects incorrect fixture claims even when every text heuristic passes", async () => {
-    const predicate = await runnerFailurePredicate();
-    expect(
-      predicate({
-        exitCode: 0,
-        naturalUse: true,
-        correctFirstTool: true,
-        repeatedCallCount: 0,
-        inputValidationFailureCount: 0,
-        requiredToolSubsequenceMet: true,
-        inputTokens: 100,
-        answerHeuristicsMet: true,
-        epistemicCuePresent: true,
-        factualCorrectness: "failed",
-      }),
-    ).toBe(true);
+  it("rejects incorrect fixture claims even when every text heuristic passes", () => {
+    expect(() =>
+      assertAgentEvaluationsPassed([
+        { id: "correct", ...routingSuccess, factualCorrectness: "passed" },
+        { id: "incorrect", ...routingSuccess, factualCorrectness: "failed" },
+      ]),
+    ).toThrow("Agent routing/workflow/answer checks failed: incorrect");
+  });
+  it("accepts a factually correct report through the runner's gate", () => {
+    expect(() =>
+      assertAgentEvaluationsPassed([
+        { id: "correct", ...routingSuccess, factualCorrectness: "passed" },
+      ]),
+    ).not.toThrow();
   });
 });
-
-async function runnerFailurePredicate(): Promise<(item: unknown) => unknown> {
-  const source = await readFile("scripts/verify-agent-experience.mjs", "utf8");
-  const program = parse(source, { sourceType: "module" }).program;
-  for (const top of program.body) {
-    if (top.type !== "TryStatement") continue;
-    for (const statement of top.block.body) {
-      if (statement.type !== "VariableDeclaration") continue;
-      for (const declaration of statement.declarations) {
-        if (
-          declaration.id.type !== "Identifier" ||
-          declaration.id.name !== "failed"
-        )
-          continue;
-        const initializer = declaration.init;
-        if (initializer?.type !== "CallExpression") continue;
-        const argument = initializer.arguments[0];
-        if (
-          argument?.type !== "ArrowFunctionExpression" ||
-          typeof argument.start !== "number" ||
-          typeof argument.end !== "number"
-        )
-          continue;
-        const factory = new Function(
-          "agentEvaluationPassed",
-          `return (${source.slice(argument.start, argument.end)});`,
-        );
-        const result: unknown = factory(agentEvaluationPassed);
-        if (typeof result !== "function")
-          throw new Error("Runner gate is not callable");
-        return (item) => result(item);
-      }
-    }
-  }
-  throw new Error("Runner failure gate missing");
-}
 
 describe("scoped factual report", () => {
   it("requires a validated target clarification and zero REA calls for the negative route", () => {

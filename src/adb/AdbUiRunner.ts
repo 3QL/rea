@@ -81,6 +81,11 @@ type ReplyFailure = {
   readonly kind: "unavailable" | "protocol" | "capacity";
   readonly reason: string;
 };
+/** A settled request can still lack a transportable result of its action. */
+interface RemoteCompletion {
+  readonly reply: Reply;
+  readonly kind: "report" | "refusal" | "unavailable";
+}
 interface RemoteRequest {
   readonly binary: string;
   readonly serial: string;
@@ -93,7 +98,7 @@ interface RemoteRequest {
   readonly operation: string;
   readonly socketPath: string;
   settled?: boolean;
-  completion?: Reply;
+  completion?: RemoteCompletion;
   /** Host handoff is uncertain until the matching runner answers admission. */
   actionAdmission?: "unconfirmed" | "accepted" | "refused";
   lateEvidenceRecorded?: boolean;
@@ -103,7 +108,7 @@ interface RemoteRequest {
    * forgotten, because a completed action must never disappear behind a
    * transport failure that happened while reporting it.
    */
-  recover?: (reply: Reply) => Evidence | undefined;
+  recover?: (completion: RemoteCompletion) => Evidence | undefined;
 }
 
 interface RecoveredActionOutcome {
@@ -119,6 +124,11 @@ interface RecoveredActionOutcome {
 const actionMayHaveDispatched = (request: RemoteRequest): boolean =>
   request.actionAdmission === "unconfirmed" ||
   request.actionAdmission === "accepted";
+
+const actionOutcomeUnknown = (request: RemoteRequest): boolean =>
+  actionMayHaveDispatched(request) &&
+  (request.completion === undefined ||
+    request.completion.kind === "unavailable");
 
 /** Parse the producer's terminal record, never a substring inside Android diagnostics. */
 export const parseAdbUiReply = (
@@ -570,11 +580,17 @@ export class AdbUiRunner {
           if (result.state === "settled" || result.state === "missing") {
             request.settled = true;
             if (result.response !== null) {
-              this.#rememberCompletion(request, result.response);
+              const completion = this.#rememberCompletion(
+                request,
+                result.response,
+              );
               // The originating outcome may already have been returned; it still
               // owns this request's recovery until the request is forgotten.
-              const evidence = request.recover?.(result.response);
-              if (actionMayHaveDispatched(request) && result.response.ok) {
+              const evidence = request.recover?.(completion);
+              if (
+                actionMayHaveDispatched(request) &&
+                completion.kind !== "refusal"
+              ) {
                 const outcome: RecoveredActionOutcome = {
                   requestId: request.requestId,
                   operation: request.operation,
@@ -617,7 +633,7 @@ export class AdbUiRunner {
     return [...this.#recoveredActionOutcomes.values()];
   }
 
-  #rememberCompletion(request: RemoteRequest, reply: Reply): void {
+  #rememberCompletion(request: RemoteRequest, reply: Reply): RemoteCompletion {
     if (
       reply.request_id !== request.requestId ||
       reply.instance_id !== request.instanceId
@@ -625,8 +641,19 @@ export class AdbUiRunner {
       throw new AnalysisProtocolError(
         "Completed UI result belongs to a different request or runner",
       );
-    request.completion = reply;
+    // The runner replaces oversized terminal JSON with a capacity envelope.
+    // Settlement proves remote cleanup is possible, not that input was refused.
+    const completion: RemoteCompletion = {
+      reply,
+      kind: reply.ok
+        ? "report"
+        : reply.error?.kind === "capacity"
+          ? "unavailable"
+          : "refusal",
+    };
+    request.completion = completion;
     request.settled = true;
+    return completion;
   }
 
   async #forget(request: RemoteRequest, signal?: AbortSignal): Promise<void> {
@@ -917,8 +944,7 @@ export class AdbUiRunner {
     }
     if (
       owned !== undefined &&
-      actionMayHaveDispatched(owned) &&
-      owned.completion === undefined &&
+      actionOutcomeUnknown(owned) &&
       observed === undefined
     ) {
       primary = new AnalysisOutputError(
@@ -945,7 +971,10 @@ export class AdbUiRunner {
     // A recovered refusal is the runner's definitive answer, so it replaces a
     // cancellation that is still undecided and otherwise stays visible as a
     // secondary failure instead of being dropped with the request.
-    const retainCompletion = (reply: Reply): Evidence | undefined => {
+    const retainCompletion = ({
+      reply,
+      kind,
+    }: RemoteCompletion): Evidence | undefined => {
       if (owned === undefined) return undefined;
       // Cancelling the prepared slot releases ownership; it cannot supersede
       // the authoritative body refusal or create an uncertain action outcome.
@@ -964,7 +993,11 @@ export class AdbUiRunner {
         observed ??= this.#validateObservation(request, owned, reply, signal);
       } catch (cause) {
         if (!(cause instanceof AnalysisError)) return;
-        if (!delivered && primary instanceof AnalysisCancelledError) {
+        if (kind === "unavailable")
+          (returned ?? primary).retainSecondaryFailure(cause, {
+            unavailable_completion: projectAnalysisError(cause),
+          });
+        else if (!delivered && primary instanceof AnalysisCancelledError) {
           const cancellation = primary;
           primary = cause;
           primary.retainSecondaryFailure(cancellation, {});

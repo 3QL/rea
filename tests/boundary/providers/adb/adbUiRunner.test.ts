@@ -169,8 +169,10 @@ if (request.operation === 'ping') {
   else reply({state:response===null?'missing':'settled',response});
 } else {
    if(!stream || !fs.existsSync(jobFile(request.request_id))) throw new Error('Input was not prepared');
-   if(mode.body_refusal) {
-     const encoded='REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind:'busy',reason:'Another UI request is active'}))).toString('base64');
+    if(mode.body_refusal) {
+      const kind=mode.body_refusal==='capacity'?'capacity':'busy';
+      const reason=kind==='capacity'?'Unacknowledged UI request capacity exhausted':'Another UI request is active';
+      const encoded='REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind,reason}))).toString('base64');
      console.log(encoded);
      process.exit(0);
    }
@@ -182,7 +184,8 @@ if (request.operation === 'ping') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
-  if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'unsupported',reason:mode.unsupported_reason})));
+   if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'capacity',reason:'Response exceeds the Binder transport budget'})));
+   else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'unsupported',reason:mode.unsupported_reason})));
   else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
   else if(mode.kind==='hang') {
     fs.writeFileSync(path.join(root,'active'),request.request_id);
@@ -223,11 +226,15 @@ if (request.operation === 'ping') {
   };
 }
 
-it.each([false, true])(
-  "preserves a pre-admission busy refusal and admits the next action after cleanup (cleanup offline: %s)",
-  async (cancelOffline) => {
+it.each(
+  ["busy", "capacity"].flatMap((kind) =>
+    [false, true].map((cancelOffline) => ({ kind, cancelOffline })),
+  ),
+)(
+  "preserves a pre-admission $kind refusal and admits the next action after cleanup (cleanup offline: $cancelOffline)",
+  async ({ kind, cancelOffline }) => {
     const { provider, workspace, setMode } = await fixture({
-      body_refusal: true,
+      body_refusal: kind,
       cancel_offline: cancelOffline,
     });
     const harness = await createApplicationMcpHarness({
@@ -247,7 +254,11 @@ it.each([false, true])(
     expect(error.code).toBe(
       cancelOffline ? "cleanup_incomplete" : "resource_constraint",
     );
-    expect(JSON.stringify(error)).toContain("Another UI request is active");
+    expect(JSON.stringify(error)).toContain(
+      kind === "busy"
+        ? "Another UI request is active"
+        : "Unacknowledged UI request capacity exhausted",
+    );
     expect(JSON.stringify(error)).not.toMatch(
       /may have completed|action_outcome|replay_safe/u,
     );
@@ -266,6 +277,79 @@ it.each([false, true])(
       calls.filter((name) => name === "perform_adb_ui_action"),
     ).toHaveLength(2);
     expect(calls).not.toContain("inspect_adb_ui");
+  },
+);
+
+it.each([
+  { name: "status", mode: {}, cleanupIncomplete: false },
+  { name: "cleanup", mode: { status_offline: true }, cleanupIncomplete: false },
+  {
+    name: "later cleanup",
+    mode: { status_offline: true, cancel_offline: true },
+    cleanupIncomplete: true,
+  },
+  {
+    name: "lost forget acknowledgement",
+    mode: { status_offline: true, forget_offline_once: true },
+    cleanupIncomplete: true,
+  },
+])(
+  "guards a capacity-only action completion recovered through $name until a matching fresh inspection",
+  async ({ mode, cleanupIncomplete }) => {
+    const { provider, workspace, setMode } = await fixture({
+      ...mode,
+      completion_capacity: true,
+    });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    onTestFinished(async () => {
+      await setMode({});
+      await harness.close();
+    });
+    const first = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    const error = parseMcpToolError(first).error;
+    expect(error.code).toBe(
+      cleanupIncomplete ? "cleanup_incomplete" : "unreadable_output",
+    );
+    expect(error.message).toContain("may have completed");
+    await setMode({});
+    const replay = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    expect(parseMcpToolError(replay).error).toMatchObject({
+      code: "unreadable_output",
+      details: {
+        diagnostics: {
+          current_request_dispatched: false,
+          prior_action_outcome: "unknown",
+        },
+      },
+    });
+    const actionCalls = async () =>
+      (await readFile(workspace.path("calls"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter(({ operation }) => operation === "perform_adb_ui_action");
+    expect(await actionCalls()).toHaveLength(1);
+    const inspection = await harness.client.callTool({
+      name: "inspect_adb_ui",
+      arguments: scope,
+    });
+    expect(inspection.isError, JSON.stringify(inspection)).not.toBe(true);
+    const next = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    expect(next.isError, JSON.stringify(next)).not.toBe(true);
+    expect(await actionCalls()).toHaveLength(2);
   },
 );
 

@@ -186,11 +186,13 @@ application state is left as-is.
   acknowledged immediately, then polled by request ID; long UI waits and blocked
   input sockets leave the control channel reachable. Replies remain retained
   until acknowledged; at most 16 prepared/unacknowledged requests are admitted.
-  A completion too large for the transport budget is reported as a capacity
-  refusal instead of being carried, and the request that owns it is still
-  released, so an oversized result never holds a runner slot.
+  A completion too large for the transport budget is replaced by a capacity-only
+  envelope, and its request can still be released. For an admitted action, that
+  envelope does not establish whether input occurred: the outcome remains unknown
+  and replay stays blocked until a matching fresh inspection. This also applies
+  when cleanup recovers the envelope or its forget acknowledgement is lost.
 - Host stdin handoff alone does not prove action admission. A matching runner's
-  immediate refusal (such as `busy`) stays a definitive capacity refusal even if
+  immediate refusal (such as `busy` or `capacity`) stays definitive even if
   prepared-slot cleanup needs a retry. It does not report a possible mutation or
   require a fresh inspection before the next action. A missing, malformed or
   mismatched reply still leaves submission uncertain and retains replay safeguards.

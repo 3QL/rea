@@ -46,13 +46,4 @@ it("keeps the JEB endpoint for setup without launching the engine", () => {
     available: false,
     registrationEnvironment: {},
   });
-  expect(inspectJebRegistration({})).toMatchObject({
-    configured: false,
-    available: false,
-    registrationEnvironment: {},
-  });
-  expect(inspectJebRegistration({ REA_JEB_MCP_URL: "" })).toMatchObject({
-    configured: false,
-    available: false,
-  });
 });

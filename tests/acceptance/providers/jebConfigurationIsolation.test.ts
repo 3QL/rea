@@ -198,6 +198,70 @@ test("registers an unprobed JEB endpoint without advertising service readiness o
   }
 });
 
+test.for([
+  { name: "omitted", endpoint: undefined, timeout: undefined },
+  { name: "empty", endpoint: "", timeout: undefined },
+  { name: "timeout-only", endpoint: undefined, timeout: "900000" },
+])(
+  "diagnoses the default JEB endpoint without persisting an implicit override: $name",
+  async ({ endpoint, timeout }, { cli, workspace }) => {
+    const environment = {
+      ...isolatedEnvironment(workspace),
+      CODEX_HOME: workspace.path("codex"),
+      REA_JEB_MCP_URL: endpoint,
+      REA_JEB_MCP_TIMEOUT_MS: timeout,
+    };
+    const doctor = await cli.run({
+      arguments: ["doctor", "--provider", "jeb", "--json"],
+      environment,
+    });
+    expect(doctor.exitCode, doctor.stderr).toBe(1);
+    expect(doctor.json).toMatchObject({
+      healthy: false,
+      providerInspections: expect.arrayContaining([
+        expect.objectContaining({
+          id: "jeb",
+          configured: true,
+          available: false,
+          registrationEnvironment: {},
+          checks: expect.arrayContaining([
+            expect.objectContaining({
+              name: "registration",
+              ok: true,
+              code: null,
+              detail: expect.stringContaining("http://127.0.0.1:8425/mcp"),
+            }),
+            expect.objectContaining({
+              name: "availability",
+              code: "not_probed",
+              classification: "unknown",
+            }),
+          ]),
+        }),
+      ]),
+    });
+    const setup = await cli.run({
+      arguments: [
+        "setup",
+        "--client",
+        "codex",
+        "--skill=false",
+        "--yes",
+        "--json",
+      ],
+      environment,
+    });
+    expect(setup.exitCode, setup.stderr).toBe(0);
+    expect(setup.json).toMatchObject({ status: "ready" });
+    const saved = await readFile(workspace.path("codex/config.toml"), "utf8");
+    expect(saved).not.toContain("REA_JEB_MCP_URL");
+    if (timeout !== undefined) {
+      expect(saved).toContain("REA_JEB_MCP_TIMEOUT_MS");
+      expect(saved).toContain(timeout);
+    }
+  },
+);
+
 test("starts production stdio MCP and retains peer requests around a JEB configuration refusal", async ({
   workspace,
 }) => {

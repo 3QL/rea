@@ -27,6 +27,12 @@ JEB service is reachable or that a project is open; use the existing
 unprobed JEB endpoint is not included in setup's ready-provider list; setup can
 still save its validated registration and show dedicated diagnostic guidance.
 
+When `REA_JEB_MCP_URL` is omitted or empty, doctor validates the same default
+endpoint used by the runtime, including when only a timeout is selected. It
+reports that effective endpoint as configured but unprobed. Setup saves an
+endpoint override only when a nonempty value was explicitly selected; it does
+not write the implicit default into the client registration.
+
 MCP `binary_session` probes the live JEB service and its advertised tool catalog.
 Availability is reported per operation: a reachable headless client can support
 inspection and decompilation while refusing `open_jeb_project`. Catalog discovery

@@ -24,15 +24,6 @@ const runnerPath = fileURLToPath(
   new URL("../../scripts/run-exclusive.mjs", import.meta.url),
 );
 
-// Windows ownership loads TypeScript through Node's process-free source API.
-// Admit only its known informational notice; unexpected stderr still fails.
-const runnerStartupStderr =
-  process.platform === "win32"
-    ? expect.stringMatching(
-        /^(?:\(node:\d+\) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?$/u,
-      )
-    : "";
-
 it.runIf(process.platform !== "win32")(
   "holds ownership until an uncooperative command has finished cancellation",
   async () => {
@@ -323,8 +314,35 @@ it("preserves executable arguments through the public runner", async () => {
   ).toMatchObject({
     code: 0,
     stdout: JSON.stringify([payload]),
-    stderr: runnerStartupStderr,
+    stderr: "",
   });
+});
+
+it("preserves command stderr, warnings and exit status independently of supervisor notices", async () => {
+  const directory = await createTestTempDirectory("rea-runner-diagnostics-");
+  const stderr = 'authored command stderr: "quotes" & 雪\n';
+  const result = await execute(directory, process.execPath, [
+    "-e",
+    `
+process.stdout.write(JSON.stringify({
+  disabledWarnings: process.execArgv.filter((argument) => argument.startsWith("--disable-warning")),
+}));
+process.stderr.write(${JSON.stringify(stderr)});
+process.emitWarning("authored command experiment", { type: "ExperimentalWarning" });
+process.emitWarning("authored command deprecation", { type: "DeprecationWarning" });
+process.exitCode = 7;
+`,
+  ]);
+  expect(result.code).toBe(7);
+  expect(JSON.parse(result.stdout)).toEqual({ disabledWarnings: [] });
+  expect(result.stderr).toContain(stderr);
+  expect(result.stderr).toContain(
+    "ExperimentalWarning: authored command experiment",
+  );
+  expect(result.stderr).toContain(
+    "DeprecationWarning: authored command deprecation",
+  );
+  expect(result.stderr).not.toContain("stripTypeScriptTypes");
 });
 
 it.runIf(process.platform === "win32")(
@@ -341,7 +359,7 @@ it.runIf(process.platform === "win32")(
     ).toMatchObject({
       code: 0,
       stdout: JSON.stringify([payload]),
-      stderr: runnerStartupStderr,
+      stderr: "",
     });
   },
 );
@@ -357,11 +375,11 @@ it.runIf(process.platform === "win32")(
     ).toMatchObject({
       code: 0,
       stdout: JSON.stringify([payload]),
-      stderr: runnerStartupStderr,
+      stderr: "",
     });
 
     const npm = await execute(directory, "npm", ["--version"]);
-    expect(npm).toMatchObject({ code: 0, stderr: runnerStartupStderr });
+    expect(npm).toMatchObject({ code: 0, stderr: "" });
     expect(npm.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
 
     const npmProject = join(directory, "npm project");
@@ -382,7 +400,7 @@ it.runIf(process.platform === "win32")(
       "--",
       shimPayload,
     ]);
-    expect(npmArgv).toMatchObject({ code: 0, stderr: runnerStartupStderr });
+    expect(npmArgv).toMatchObject({ code: 0, stderr: "" });
     expect(npmArgv.stdout).toContain(JSON.stringify([shimPayload]));
 
     const turbo = await execute(
@@ -390,7 +408,7 @@ it.runIf(process.platform === "win32")(
       join(process.cwd(), "node_modules", ".bin", "turbo"),
       ["--version"],
     );
-    expect(turbo).toMatchObject({ code: 0, stderr: runnerStartupStderr });
+    expect(turbo).toMatchObject({ code: 0, stderr: "" });
     expect(turbo.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
   },
 );

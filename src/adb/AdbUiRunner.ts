@@ -678,8 +678,9 @@ export class AdbUiRunner {
       throw new AnalysisProtocolError(
         "Completed UI result belongs to a different request or runner",
       );
-    // The runner replaces oversized terminal JSON with a capacity envelope.
-    // Settlement proves remote cleanup is possible, not that input was refused.
+    // Sensitive-store refusals use their own kind. Keep the existing capacity
+    // tag for lost output so older hosts also retain replay guards; older
+    // runners' ambiguous capacity replies cannot establish a refusal either.
     const completion: RemoteCompletion = {
       reply,
       kind: reply.ok
@@ -729,6 +730,7 @@ export class AdbUiRunner {
     let owned: RemoteRequest | undefined;
     let observed: UiObservation | undefined;
     let admissionFailure: AnalysisError | undefined;
+    let failureBeforeUnknownOutcome: AnalysisError | undefined;
     // A returned outcome is final; a later recovery can only add provenance.
     // The caller holds the composed cleanup failure, not the primary, so a late
     // recovery attaches to whichever error this request actually produced.
@@ -1015,6 +1017,7 @@ export class AdbUiRunner {
       actionOutcomeUnknown(owned) &&
       observed === undefined
     ) {
+      failureBeforeUnknownOutcome = primary;
       primary = new AnalysisOutputError(
         request.operation,
         "The submitted UI action has no confirmed terminal outcome",
@@ -1065,10 +1068,17 @@ export class AdbUiRunner {
           (returned ?? primary).retainSecondaryFailure(cause, {
             unavailable_completion: projectAnalysisError(cause),
           });
-        else if (!delivered && primary instanceof AnalysisCancelledError) {
-          const cancellation = primary;
+        else if (
+          !delivered &&
+          (primary instanceof AnalysisCancelledError ||
+            (kind === "refusal" && failureBeforeUnknownOutcome !== undefined))
+        ) {
+          // A recovered refusal settles the temporary uncertainty before
+          // delivery. Preserve the physical failure, not a superseded inference.
+          const previous = failureBeforeUnknownOutcome ?? primary;
+          failureBeforeUnknownOutcome = undefined;
           primary = cause;
-          primary.retainSecondaryFailure(cancellation, {});
+          primary.retainSecondaryFailure(previous, {});
         } else
           // Callers read the projected error, not the cause chain, so the
           // runner's definitive refusal is retained where it stays visible.
@@ -1175,6 +1185,21 @@ export class AdbUiRunner {
     failure: NonNullable<Reply["error"]>,
     signal?: AbortSignal,
   ): AnalysisError {
+    if (failure.kind === "sensitive_capacity")
+      return new AnalysisResourceConstraintError(
+        request.operation,
+        "capacity",
+        failure.reason,
+        null,
+        {
+          remediationAction:
+            "After outstanding work settles, restart the operator-owned UI runner before adding more sensitive values. Actions that do not add sensitive values remain available.",
+          diagnostics: {
+            runner_failure: failure.kind,
+            runner_instance: owned.instanceId,
+          },
+        },
+      );
     if (failure.kind === "timeout")
       return new AnalysisTimeoutError(
         request.operation,

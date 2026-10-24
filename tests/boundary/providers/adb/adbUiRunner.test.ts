@@ -179,7 +179,7 @@ if (request.operation === 'ping') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
-   if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'capacity',reason:'Response exceeds the Binder transport budget'})));
+   if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:typeof mode.completion_capacity==='string'?mode.completion_capacity:'capacity',reason:mode.capacity_reason??'Response exceeds the Binder transport budget'})));
     else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:mode.unsupported_kind??'unsupported',reason:mode.unsupported_reason})));
   else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
   else if(mode.kind==='hang') {
@@ -390,7 +390,7 @@ it.each([
   },
 );
 
-it.each([
+const completionRecoveryCases = [
   { name: "status", mode: {}, cleanupIncomplete: false },
   { name: "cleanup", mode: { status_offline: true }, cleanupIncomplete: false },
   {
@@ -403,12 +403,14 @@ it.each([
     mode: { status_offline: true, forget_offline_once: true },
     cleanupIncomplete: true,
   },
-])(
+];
+
+it.each(completionRecoveryCases)(
   "guards a capacity-only action completion recovered through $name until a matching fresh inspection",
   async ({ mode, cleanupIncomplete }) => {
     const { provider, workspace, setMode } = await fixture({
       ...mode,
-      completion_capacity: true,
+      completion_capacity: "capacity",
     });
     const harness = await createApplicationMcpHarness({
       serverOptions: { adbDeviceAnalysis: provider },
@@ -460,6 +462,66 @@ it.each([
     });
     expect(next.isError, JSON.stringify(next)).not.toBe(true);
     expect(await actionCalls()).toHaveLength(2);
+  },
+);
+
+it.each(completionRecoveryCases)(
+  "keeps a sensitive-store capacity refusal definitive through $name recovery",
+  async ({ name, mode, cleanupIncomplete }) => {
+    const reason =
+      "Runner sensitive-text retention budget exhausted; existing redactions are retained";
+    const { provider, workspace, setMode } = await fixture({
+      ...mode,
+      completion_capacity: "sensitive_capacity",
+      capacity_reason: reason,
+    });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    onTestFinished(async () => {
+      await setMode({});
+      await harness.close();
+    });
+    const first = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: {
+        ...actionInput,
+        action: { kind: "set_text", text: "capacity probe", sensitive: true },
+      },
+    });
+    const error = parseMcpToolError(first).error;
+    expect(error.code).toBe(
+      cleanupIncomplete ? "cleanup_incomplete" : "resource_constraint",
+    );
+    if (name !== "later cleanup") {
+      expect(error.message).toContain(reason);
+      expect(error.message).not.toContain("may have completed");
+      if (!cleanupIncomplete)
+        expect(error.remediation.action).toContain(
+          "restart the operator-owned UI runner",
+        );
+    }
+    await setMode({});
+    const fresh = await harness.client.callTool({
+      name: "find_adb_ui_elements",
+      arguments: { ...scope, selector: {} },
+    });
+    expect(fresh.isError, JSON.stringify(fresh)).not.toBe(true);
+    const next = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: actionInput,
+    });
+    expect(next.isError, JSON.stringify(next)).not.toBe(true);
+    const calls = (await readFile(workspace.path("calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).operation);
+    expect(
+      calls.filter((operation) => operation === "perform_adb_ui_action"),
+    ).toHaveLength(2);
+    expect(calls).not.toContain("inspect_adb_ui");
   },
 );
 

@@ -215,17 +215,26 @@ it.each([
         });
       });
     };
-    // Observe imported production boundaries: spying on the service's own
-    // export cannot intercept its lexical calls to that same function.
-    const originalProject = analysisView.projectAnalysisView;
-    let projected: ReturnType<typeof originalProject> | undefined;
-    const project = vi
-      .spyOn(analysisView, "projectAnalysisView")
-      .mockImplementation((...args) => {
-        projected = originalProject(...args);
-        if (phase === "projection") queueInterrupt();
-        return projected;
-      });
+    // The service uses a prepared owner whose projection is a lexical call.
+    // Observe that actual owner while preserving its admission and budget state.
+    const originalPrepare = analysisView.prepareAnalysisViewProjection;
+    type Projection = ReturnType<typeof originalPrepare>["project"];
+    let projected: ReturnType<Projection> | undefined;
+    const project = vi.fn((result: ReturnType<Projection>) => {
+      projected = result;
+      if (phase === "projection") queueInterrupt();
+      return result;
+    });
+    vi.spyOn(analysisView, "prepareAnalysisViewProjection").mockImplementation(
+      (...args) => {
+        const prepared = originalPrepare(...args);
+        const originalProject = prepared.project.bind(prepared);
+        vi.spyOn(prepared, "project").mockImplementation((...input) =>
+          project(originalProject(...input)),
+        );
+        return prepared;
+      },
+    );
     const originalResolve = evidenceInputResolver.resolveEvidenceInput;
     vi.spyOn(evidenceInputResolver, "resolveEvidenceInput").mockImplementation(
       (...args) => {

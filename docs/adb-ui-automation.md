@@ -191,6 +191,12 @@ application state is left as-is.
   envelope does not establish whether input occurred: the outcome remains unknown
   and replay stays blocked until a matching fresh inspection. This also applies
   when cleanup recovers the envelope or its forget acknowledgement is lost.
+  A definitive sensitive-value storage refusal has its own `sensitive_capacity`
+  kind and leaves other permitted actions available. An operator restarts the
+  runner after outstanding work settles to admit additional sensitive values.
+  Missing results keep the existing `capacity` kind so older hosts retain replay
+  protection. Older runners' ambiguous terminal `capacity` replies also retain
+  the unknown-outcome gate.
 - Host stdin handoff alone does not prove action admission. A matching runner's
   immediate refusal (such as `busy` or `capacity`) stays definitive even if
   host-command or prepared-slot cleanup needs a retry. Admission is recorded from

@@ -971,7 +971,7 @@ public final class ReaUiRunner extends Instrumentation {
     if (value.isEmpty() || sensitiveText.contains(value)) return;
     if (value.length() > 65536 - sensitiveCodeUnits)
       throw new Refusal(
-          "capacity",
+          "sensitive_capacity",
           "Runner sensitive-text retention budget exhausted; existing redactions are retained");
     sensitiveText.add(value);
     sensitiveCodeUnits += value.length();
@@ -1036,8 +1036,8 @@ public final class ReaUiRunner extends Instrumentation {
 
   /**
    * Bound one terminal response to the transport budget. A response that cannot travel is reported
-   * as a capacity refusal instead of being carried silently, so the request that owns it can still
-   * be released.
+   * as a missing-result capacity envelope instead of being carried silently, so the owning request
+   * can still be released.
    */
   private JSONObject boundedResponse(JSONObject message, int limit) throws JSONException {
     JSONObject response = (JSONObject) maskResult(message);

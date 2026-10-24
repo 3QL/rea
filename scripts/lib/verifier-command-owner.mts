@@ -70,8 +70,6 @@ export interface VerifierCommandsOptions {
   readonly launcher?: (
     input: OwnedProviderProcessSpawnOptions,
   ) => Promise<SpawnedOwnedProviderProcess>;
-  /** Persistent resources close with the scope, not before its next command. */
-  readonly closeHooks?: readonly (() => Promise<void>)[];
 }
 
 /** An ordinary nonzero exit whose process and output cleanup both completed. */
@@ -170,13 +168,11 @@ class VerifierCommandOwner implements VerifierCommands {
     private readonly launcher: (
       input: OwnedProviderProcessSpawnOptions,
     ) => Promise<SpawnedOwnedProviderProcess>,
-    closeHooks: readonly (() => Promise<void>)[],
   ) {
     this.#resourceOwner = {
       retain: (owner, resource) => this.adopt(owner, resource),
       run: (work) => this.#resources.run(work),
     };
-    for (const close of closeHooks) this.#resources.addCloseHook(close);
   }
 
   get cleanupResources(): readonly string[] {
@@ -275,7 +271,6 @@ class VerifierCommandOwner implements VerifierCommands {
 /** Allocate command ownership without acquiring or deleting an evidence root. */
 export async function createVerifierCommands({
   launcher = launchVerifierCommand,
-  closeHooks = [],
 }: VerifierCommandsOptions = {}): Promise<VerifierCommands> {
-  return new VerifierCommandOwner(launcher, closeHooks);
+  return new VerifierCommandOwner(launcher);
 }

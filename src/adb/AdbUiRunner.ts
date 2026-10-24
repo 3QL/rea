@@ -1191,7 +1191,10 @@ export class AdbUiRunner {
         failure.reason,
         null,
       );
-    if (failure.kind === "unsupported")
+    if (
+      failure.kind === "unsupported" ||
+      failure.kind === "unsupported_key_code"
+    )
       return new AnalysisCapabilityUnavailableError(
         "adb",
         request.operation,
@@ -1200,6 +1203,11 @@ export class AdbUiRunner {
           diagnostics: {
             runner_failure: failure.kind,
             runner_instance: owned.instanceId,
+            ...(failure.kind === "unsupported_key_code" &&
+            request.operation === "perform_adb_ui_action" &&
+            request.input.action.kind === "key_event"
+              ? { requested_key_code: request.input.action.key_code }
+              : {}),
             selected_scope: {
               serial: request.input.serial,
               package: request.input.package,
@@ -1210,7 +1218,9 @@ export class AdbUiRunner {
             },
           },
           remediationAction:
-            "Select a device and display supported by this operation: secondary-display inspection requires Android 11 or later, and key events require display 0.",
+            failure.kind === "unsupported_key_code"
+              ? "Choose a key_code supported by the connected device's Android version, using the range reported by the runner."
+              : "Select a device and display supported by this operation: secondary-display inspection requires Android 11 or later, and key events require display 0.",
         },
       );
     return new AnalysisOutputError(request.operation, failure.kind, {

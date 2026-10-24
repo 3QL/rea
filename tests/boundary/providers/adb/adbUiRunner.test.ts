@@ -180,7 +180,7 @@ if (request.operation === 'ping') {
     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
    if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'capacity',reason:'Response exceeds the Binder transport budget'})));
-   else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'unsupported',reason:mode.unsupported_reason})));
+    else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:mode.unsupported_kind??'unsupported',reason:mode.unsupported_reason})));
   else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
   else if(mode.kind==='hang') {
     fs.writeFileSync(path.join(root,'active'),request.request_id);
@@ -1128,6 +1128,7 @@ it.each([
     operation: "inspect_adb_ui",
     input: { ...scope, display_id: 1 },
     reason: "Secondary display inspection requires Android 11",
+    kind: "unsupported",
   },
   {
     operation: "perform_adb_ui_action",
@@ -1138,11 +1139,26 @@ it.each([
       action: { kind: "key_event", key_code: 4 },
     },
     reason: "UI Automator key events target the default display",
+    kind: "unsupported",
+  },
+  {
+    operation: "perform_adb_ui_action",
+    input: {
+      ...scope,
+      display_id: 0,
+      snapshot_id: snapshotId,
+      action: { kind: "key_event", key_code: 2147483647 },
+    },
+    reason: "Key code 2147483647 is unsupported by this Android version",
+    kind: "unsupported_key_code",
   },
 ])(
   "classifies a definitive unsupported $operation reply through MCP",
-  async ({ operation, input, reason }) => {
-    const { provider } = await fixture({ unsupported_reason: reason });
+  async ({ operation, input, reason, kind }) => {
+    const { provider } = await fixture({
+      unsupported_reason: reason,
+      unsupported_kind: kind,
+    });
     const harness = await createApplicationMcpHarness({
       serverOptions: { adbDeviceAnalysis: provider },
       configureServer: (server, session) => {
@@ -1165,13 +1181,20 @@ it.each([
         operation,
         reason,
         diagnostics: {
-          selected_scope: { ...scope, display_id: 1 },
+          selected_scope: { ...scope, display_id: input.display_id },
         },
       },
     });
     expect(error.remediation.action).not.toContain(
       "Inspect or find the current UI again",
     );
+    if (kind === "unsupported_key_code") {
+      expect(error.remediation.action).toContain("key_code");
+      expect(error.remediation.action).toContain("Android version");
+      expect(error.details).toMatchObject({
+        diagnostics: { requested_key_code: 2147483647 },
+      });
+    }
   },
 );
 

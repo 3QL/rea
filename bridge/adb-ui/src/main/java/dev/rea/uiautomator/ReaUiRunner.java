@@ -637,8 +637,14 @@ public final class ReaUiRunner extends Instrumentation {
           }
         case "key_event":
           int code = action.getInt("key_code");
-          if (code < 0 || code > KeyEvent.getMaxKeyCode())
-            throw new Refusal("invalid_request", "Key code is unsupported by this Android version");
+          int maximumKeyCode = KeyEvent.getMaxKeyCode();
+          if (code < 0 || code > maximumKeyCode)
+            throw new Refusal(
+                "unsupported_key_code",
+                "Key code "
+                    + code
+                    + " is unsupported by this Android version; supported range is 0.."
+                    + maximumKeyCode);
           if (snapshot.display != 0)
             throw new Refusal("unsupported", "UI Automator key events target the default display");
           // Accessibility activity does not establish keyboard input routing.

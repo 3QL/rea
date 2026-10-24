@@ -130,10 +130,12 @@ class PackageCommands implements PackageVerifierCommands {
 /** Remove the package workspace only after its shared command owner releases. */
 export async function createPackageVerifierCommands({
   workspace,
-  ...options
+  launcher,
 }: VerifierCommandsOptions & {
   readonly workspace: PackageVerifierWorkspace;
 }): Promise<PackageVerifierCommands> {
-  const commands = await createVerifierCommands(options);
+  const commands = await createVerifierCommands(
+    launcher === undefined ? {} : { launcher },
+  );
   return new PackageCommands(workspace, commands);
 }

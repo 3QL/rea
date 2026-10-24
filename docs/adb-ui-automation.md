@@ -198,6 +198,10 @@ application state is left as-is.
   that cleanup. It does not report a possible mutation or
   require a fresh inspection before the next action. A missing, malformed or
   mismatched reply still leaves submission uncertain and retains replay safeguards.
+- A key code outside the connected Android version's supported range is a
+  producer-reported capability refusal. The error retains the requested code
+  and directs the caller to choose a supported code, rather than refreshing an
+  element selection. The runner reports its runtime key-code range.
 - Cancellation settles host commands, cancels only the owned remote request,
   waits for its work to settle and acknowledges its retained result. A separate
   five-second cleanup budget applies. Completed facts survive acknowledgement

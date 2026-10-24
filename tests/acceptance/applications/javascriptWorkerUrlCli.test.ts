@@ -1,10 +1,44 @@
-import { expect } from "vitest";
+import { runInNewContext } from "node:vm";
+
+import { transformSync } from "esbuild";
+import { expect, it } from "vitest";
 
 import type { JavaScriptApplicationGraph } from "../../../src/domain/javascript/javascriptApplicationGraph.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 import { analyzeJavaScriptDirectory } from "../../support/cli/javascriptApplication.js";
 import { writeFixtureFiles } from "../../support/javascriptApplicationFixture.js";
+
+const typeOnlyWorkerImports = [
+  'import type { Worker } from "node:worker_threads";',
+  'import { type Worker } from "node:worker_threads";',
+];
+
+it.each(typeOnlyWorkerImports)(
+  "preserves the ambient Worker at runtime after erasing %s",
+  (prefix) => {
+    const workerUrls: string[] = [];
+    const { code } = transformSync(
+      `${prefix}\nnew Worker(new URL("./worker.js", import.meta.url));`,
+      {
+        loader: "ts",
+        format: "iife",
+        define: {
+          "import.meta.url": JSON.stringify("file:///fixture/main.ts"),
+        },
+      },
+    );
+    runInNewContext(code, {
+      URL,
+      Worker: class {
+        constructor(url: URL) {
+          workerUrls.push(url.href);
+        }
+      },
+    });
+    expect(workerUrls).toEqual(["file:///fixture/worker.js"]);
+  },
+);
 
 const workerReferences = (graph: JavaScriptApplicationGraph) =>
   graph.nodes
@@ -84,13 +118,12 @@ cliTest(
         suffix: "",
         resolves: true,
       },
-      {
-        // A whole type-only import is erased and does not shadow the global.
-        prefix: 'import type { Worker } from "node:worker_threads";',
+      ...typeOnlyWorkerImports.map((prefix) => ({
+        prefix,
         constructor: "new Worker",
         suffix: "",
         resolves: true,
-      },
+      })),
       ...[
         ["class Worker {}", "new Worker", ""],
         ["globalThis.Worker = Fake;", "new Worker", ""],
@@ -101,12 +134,6 @@ cliTest(
         ["const custom = { Worker: class {} };", "new custom.Worker", ""],
         ["function start(window) {", "new window.Worker", "}"],
         ["function start(globalThis) {", "new globalThis.Worker", "}"],
-        [
-          // Inline type specifiers may retain the module's side-effect import.
-          'import { type Worker } from "node:worker_threads";',
-          "new Worker",
-          "",
-        ],
         [
           'import type * as threads from "node:worker_threads";',
           "new threads.Worker",

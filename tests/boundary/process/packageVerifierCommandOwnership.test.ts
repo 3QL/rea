@@ -64,10 +64,12 @@ const stopReceiptSchema = z.object({
   reason: z.string().optional(),
 });
 
-processTest.skipIf(process.platform !== "linux")(
-  "releases the cold TypeScript compiler before reporting verifier cleanup",
+processTest
+  .skipIf(process.platform !== "linux")
+  .for(["package", "shared"] as const)(
+  "releases the cold TypeScript compiler across package/%s scopes before reporting cleanup",
   { timeout: 30_000 },
-  async ({ processes }) => {
+  async (secondScope, { processes }) => {
     const root = await createTestTempDirectory("rea-package-loader-owner-");
     const driver = join(root, "driver.mjs");
     const commandsModule = pathToFileURL(
@@ -75,6 +77,9 @@ processTest.skipIf(process.platform !== "linux")(
     ).href;
     const lineageModule = pathToFileURL(
       resolve("scripts/lib/verifier-run.mjs"),
+    ).href;
+    const sharedCommandsModule = pathToFileURL(
+      resolve("scripts/lib/verify-commands.mjs"),
     ).href;
     const cleanupModule = pathToFileURL(
       resolve("scripts/lib/verifier-cleanup.mjs"),
@@ -93,6 +98,7 @@ processTest.skipIf(process.platform !== "linux")(
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createPackageVerifierCommands } from ${JSON.stringify(commandsModule)};
+import { createVerifierCommands } from ${JSON.stringify(sharedCommandsModule)};
 import { createVerifierRun, completeVerifierRun } from ${JSON.stringify(lineageModule)};
 import { withVerifierCleanup, closeVerifierResources } from ${JSON.stringify(cleanupModule)};
 import { tsImport } from ${JSON.stringify(tsxModule)};
@@ -103,7 +109,10 @@ const workspaces = await Promise.all([0, 1].map(async index => ({
 })));
 let owners = [], output, lateValue, peerResult;
 await withVerifierCleanup(async () => {
-  owners = await Promise.all(workspaces.map(workspace => createPackageVerifierCommands({ workspace })));
+  owners = await Promise.all([
+    createPackageVerifierCommands({ workspace: workspaces[0] }),
+    ${secondScope === "package" ? "createPackageVerifierCommands({ workspace: workspaces[1] })" : "createVerifierCommands()"},
+  ]);
   output = await Promise.all(owners.map((owner, index) => owner.exec(
     process.execPath, ["-e", "process.stdout.write(" + JSON.stringify(String(index)) + ")"],
     { timeout: 5000 },

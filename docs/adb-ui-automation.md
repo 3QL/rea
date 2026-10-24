@@ -90,7 +90,7 @@ Repeat the package, display and optional window scope when using a retained ID.
 ## Proposed input actions (source-tree experiment only)
 
 This section documents the unregistered proposal, not a production CLI/MCP
-operation. The [verification workflow](../experiments/adb-ui/README.md) starts
+operation. The [verification workflow](https://github.com/morluto/rea/blob/main/experiments/adb-ui/README.md) starts
 `node experiments/adb-ui/mcp.mjs` to bind the proposed contract explicitly. Its
 real-device checks use isolated, operator-owned fixture apps. A maintainer scope
 decision is still required before public registration or distribution.

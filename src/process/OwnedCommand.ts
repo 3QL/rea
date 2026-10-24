@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import type {
   OwnedProviderProcessSpawnOptions,
   ProviderProcessSnapshot,
+  ProcessDiagnosticBudget,
   ProviderProcessStopResult,
   SpawnedOwnedProviderProcess,
 } from "./ProviderProcess.js";
@@ -82,8 +83,8 @@ export const ownedCommandResources = (
 
 /** Output handling for one owned command. */
 interface OwnedCommandLimits {
-  /** Retained stderr bytes, plus stdout bytes unless a sink consumes stdout. */
-  readonly diagnosticBytes: number;
+  /** Retained output budget; stdout is excluded when a sink consumes it. */
+  readonly diagnosticBytes: ProcessDiagnosticBudget;
   /** Accept an ordinary nonzero exit after output closes without other process errors. */
   readonly acceptNonZeroExit?: boolean;
   /** Interpret complete physical output synchronously before awaited final cleanup. */
@@ -158,7 +159,10 @@ function throwCommandPreparationFailure(
 /** Execute a single owned process with independent cleanup and bounded diagnostic retention. */
 export const runOwnedCommand = async (
   spawn: OwnedProviderProcessSpawnOptions,
-  limits: OwnedCommandLimits & { readonly timeoutMs: number },
+  limits: OwnedCommandLimits & {
+    /** A positive absolute deadline, or null to keep only caller cancellation. */
+    readonly timeoutMs: number | null;
+  },
   options: {
     readonly signal?: AbortSignal | undefined;
     /** Bounded caller-owned bytes/text delivered through piped stdin, never argv or diagnostics. */
@@ -186,20 +190,29 @@ export const runOwnedCommand = async (
       null,
       { cancellation: { reason: callerSignal.reason } },
     );
-  const deadline = new ProviderStartupDeadline(limits.timeoutMs, callerSignal);
+  const deadline =
+    limits.timeoutMs === null
+      ? undefined
+      : new ProviderStartupDeadline(limits.timeoutMs, callerSignal);
+  const control = deadline ?? {
+    signal: callerSignal ?? new AbortController().signal,
+    get interruption(): "cancelled" | undefined {
+      return callerSignal?.aborted === true ? "cancelled" : undefined;
+    },
+  };
   try {
     return await collectOwnedCommand(
       spawn,
       limits,
       options.launcher ?? spawnOwnedProviderProcess,
-      deadline,
+      control,
       callerSignal,
       options.retainCleanup,
       options.input,
       options.onInputSubmission,
     );
   } finally {
-    deadline.dispose();
+    deadline?.dispose();
   }
 };
 
@@ -209,7 +222,7 @@ const collectOwnedCommand = async (
   launcher: (
     input: OwnedProviderProcessSpawnOptions,
   ) => Promise<SpawnedOwnedProviderProcess>,
-  deadline: ProviderStartupDeadline,
+  deadline: Pick<ProviderStartupDeadline, "signal" | "interruption">,
   callerSignal?: AbortSignal,
   retainCleanup?: (
     owner: ProviderProcessSupervisor,

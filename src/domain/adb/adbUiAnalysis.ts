@@ -254,13 +254,6 @@ export const adbUiObservationSchemas = {
   }),
 } as const;
 
-/** Completed UI facts recovered while settling an interrupted caller request. */
-export interface AdbUiPartialObservation {
-  readonly provider_id: "adb";
-  readonly operation: AdbUiOperation;
-  readonly result: z.infer<(typeof adbUiResultSchemas)[AdbUiOperation]>;
-}
-
 export const adbUiResultSchemas = {
   inspect_adb_ui: adbUiObservationSchemas.inspect_adb_ui.extend({
     client: adbClientIdentitySchema,

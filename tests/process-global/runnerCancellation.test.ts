@@ -24,6 +24,15 @@ const runnerPath = fileURLToPath(
   new URL("../../scripts/run-exclusive.mjs", import.meta.url),
 );
 
+// Windows ownership loads TypeScript through Node's process-free source API.
+// Admit only its known informational notice; unexpected stderr still fails.
+const runnerStartupStderr =
+  process.platform === "win32"
+    ? expect.stringMatching(
+        /^(?:\(node:\d+\) ExperimentalWarning: stripTypeScriptTypes is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?$/u,
+      )
+    : "";
+
 it.runIf(process.platform !== "win32")(
   "holds ownership until an uncooperative command has finished cancellation",
   async () => {
@@ -314,7 +323,7 @@ it("preserves executable arguments through the public runner", async () => {
   ).toMatchObject({
     code: 0,
     stdout: JSON.stringify([payload]),
-    stderr: "",
+    stderr: runnerStartupStderr,
   });
 });
 
@@ -332,7 +341,7 @@ it.runIf(process.platform === "win32")(
     ).toMatchObject({
       code: 0,
       stdout: JSON.stringify([payload]),
-      stderr: "",
+      stderr: runnerStartupStderr,
     });
   },
 );
@@ -348,11 +357,11 @@ it.runIf(process.platform === "win32")(
     ).toMatchObject({
       code: 0,
       stdout: JSON.stringify([payload]),
-      stderr: "",
+      stderr: runnerStartupStderr,
     });
 
     const npm = await execute(directory, "npm", ["--version"]);
-    expect(npm).toMatchObject({ code: 0, stderr: "" });
+    expect(npm).toMatchObject({ code: 0, stderr: runnerStartupStderr });
     expect(npm.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
 
     const npmProject = join(directory, "npm project");
@@ -373,7 +382,7 @@ it.runIf(process.platform === "win32")(
       "--",
       shimPayload,
     ]);
-    expect(npmArgv).toMatchObject({ code: 0, stderr: "" });
+    expect(npmArgv).toMatchObject({ code: 0, stderr: runnerStartupStderr });
     expect(npmArgv.stdout).toContain(JSON.stringify([shimPayload]));
 
     const turbo = await execute(
@@ -381,7 +390,7 @@ it.runIf(process.platform === "win32")(
       join(process.cwd(), "node_modules", ".bin", "turbo"),
       ["--version"],
     );
-    expect(turbo).toMatchObject({ code: 0, stderr: "" });
+    expect(turbo).toMatchObject({ code: 0, stderr: runnerStartupStderr });
     expect(turbo.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
   },
 );

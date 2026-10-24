@@ -199,12 +199,22 @@ test("registers an unprobed JEB endpoint without advertising service readiness o
 });
 
 test.for([
-  { name: "omitted", endpoint: undefined, timeout: undefined },
-  { name: "empty", endpoint: "", timeout: undefined },
-  { name: "timeout-only", endpoint: undefined, timeout: "900000" },
+  {
+    name: "omitted",
+    endpoint: undefined,
+    timeout: undefined,
+    configured: false,
+  },
+  { name: "empty", endpoint: "", timeout: undefined, configured: false },
+  {
+    name: "timeout-only",
+    endpoint: undefined,
+    timeout: "900000",
+    configured: true,
+  },
 ])(
   "diagnoses the default JEB endpoint without persisting an implicit override: $name",
-  async ({ endpoint, timeout }, { cli, workspace }) => {
+  async ({ endpoint, timeout, configured }, { cli, workspace }) => {
     const environment = {
       ...isolatedEnvironment(workspace),
       CODEX_HOME: workspace.path("codex"),
@@ -221,7 +231,7 @@ test.for([
       providerInspections: expect.arrayContaining([
         expect.objectContaining({
           id: "jeb",
-          configured: true,
+          configured,
           available: false,
           registrationEnvironment: {},
           checks: expect.arrayContaining([

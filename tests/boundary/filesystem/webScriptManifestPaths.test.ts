@@ -226,17 +226,11 @@ it.each(["trace_web_module_imports", "trace_web_source_location"] as const)(
     }
     if (response.ok) throw new Error("Expected Windows source path refusal");
     expect(projectAnalysisError(response.error)).toMatchObject({
-      code: "invalid_request",
+      code: "artifact_operation_failed",
       details: {
-        issues: [
-          {
-            path: ["script_index"],
-            reason: "invalid_value",
-            message: expect.stringContaining(
-              "Windows source path cannot contain backslashes",
-            ),
-          },
-        ],
+        operation,
+        reason: "path",
+        detail: `Windows source path cannot contain backslashes as literal name characters: ${JSON.stringify("..\\sibling.js")}`,
       },
     });
   },

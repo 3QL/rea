@@ -29,9 +29,11 @@ still save its validated registration and show dedicated diagnostic guidance.
 
 When `REA_JEB_MCP_URL` is omitted or empty, doctor validates the same default
 endpoint used by the runtime, including when only a timeout is selected. It
-reports that effective endpoint as configured but unprobed. Setup saves an
-endpoint override only when a nonempty value was explicitly selected; it does
-not write the implicit default into the client registration.
+reports that effective endpoint as valid but unprobed. With no selected URL or
+timeout, JEB remains optional in the full audit and first-run provider setup;
+an explicit `--provider jeb` check still reports availability as unknown. Setup
+saves an endpoint override only when a nonempty value was explicitly selected;
+it does not write the implicit default into the client registration.
 
 MCP `binary_session` probes the live JEB service and its advertised tool catalog.
 Availability is reported per operation: a reachable headless client can support

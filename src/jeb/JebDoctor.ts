@@ -11,6 +11,9 @@ export const inspectJebRegistration = (
   environment: Readonly<Record<string, string | undefined>>,
 ): DoctorProviderInspection => {
   const value = environment.REA_JEB_MCP_URL;
+  const selected =
+    (value !== undefined && value.length > 0) ||
+    environment.REA_JEB_MCP_TIMEOUT_MS !== undefined;
   const parsed = parseJebMcpEndpoint(value);
   const valid = parsed.ok;
   const requestTimeout = parseJebMcpTimeoutMs(
@@ -48,8 +51,9 @@ export const inspectJebRegistration = (
       : [];
   return {
     id: "jeb",
-    // The runtime has a default endpoint even without a saved override.
-    configured: true,
+    // Effective defaults are valid without making this optional provider a
+    // mandatory full-audit check or suppressing first-run provider setup.
+    configured: selected,
     // Valid registration is not proof that a compatible service is running.
     available: false,
     providerVersion: null,

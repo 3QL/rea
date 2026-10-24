@@ -84,6 +84,8 @@ For test changes or provider claims, use [docs/testing.md](docs/testing.md). Pre
 
 Use Conventional Commit subjects and PR titles. Mark breaking changes with `!` or a `BREAKING CHANGE:` footer. Describe behavior changes, relevant validation, and real-provider verification scope.
 
+For every new commit created by an agent, use only @3QL's identity for both author and committer: `3QL <85309073+3QL@users.noreply.github.com>`. Do not use other identities or add co-author trailers. Verify both identities before pushing.
+
 ## Issue Reports
 
 Follow [issue reporting guidance](CONTRIBUTING.md#reporting-issues) and the matching

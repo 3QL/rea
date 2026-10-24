@@ -96,10 +96,17 @@ describe("HTTP comparison response coverage", () => {
       [response],
       [{ ...response, status: 500 }],
     );
-    expect(compareNetwork(before, after).status).toBe("unknown");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+      changes: [],
+    });
+    // A finite imported inventory supplies correspondence; passive samples
+    // alone cannot pair repeated same-URL transactions by transient CDP ID.
     markNetworkInventoriesComplete(before, after);
     expect(compareNetwork(before, after)).toMatchObject({
       status: "changed",
+      total_changes: 1,
       changes: [expect.objectContaining({ change: "modified" })],
     });
   });
@@ -112,9 +119,17 @@ describe("HTTP comparison response coverage", () => {
       [{ ...response, encodedDataLength: 100 }],
       [{ ...response, ...change }],
     );
-    expect(compareNetwork(before, after).status).toBe("unknown");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+      changes: [],
+    });
     markNetworkInventoriesComplete(before, after);
-    expect(compareNetwork(before, after).status).toBe("changed");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+      changes: [expect.objectContaining({ change: "modified" })],
+    });
   });
 });
 
@@ -149,9 +164,17 @@ describe("HTTP comparison repeated request coverage", () => {
         { ...response, requestId: "first-after", encodedDataLength: 100 },
       ],
     );
-    expect(compareNetwork(before, after).status).toBe("unknown");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+      changes: [],
+    });
     markNetworkInventoriesComplete(before, after);
-    expect(compareNetwork(before, after).status).toBe("changed");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+      changes: [expect.objectContaining({ change: "modified" })],
+    });
   });
 
   it("preserves the association between complete response fields", async () => {
@@ -175,9 +198,17 @@ describe("HTTP comparison repeated request coverage", () => {
         },
       ],
     );
-    expect(compareNetwork(before, after).status).toBe("unknown");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+      changes: [],
+    });
     markNetworkInventoriesComplete(before, after);
-    expect(compareNetwork(before, after).status).toBe("changed");
+    expect(compareNetwork(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+      changes: [expect.objectContaining({ change: "modified" })],
+    });
   });
 });
 

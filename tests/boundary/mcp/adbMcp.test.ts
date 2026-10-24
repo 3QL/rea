@@ -108,6 +108,7 @@ const results: Readonly<Record<string, unknown>> = {
     user_id: 10234,
     pkg_flags: "[ HAS_CODE ]",
     requested_permissions_count: 2,
+    numeric_issues: { sample: [], total: 0 },
     coverage: "complete",
   },
   pull_adb_file: {
@@ -197,6 +198,8 @@ const results: Readonly<Record<string, unknown>> = {
     override_size: null,
     physical_density: 420,
     override_density: null,
+    numeric_issues: { sample: [], total: 0 },
+    coverage: "complete",
   },
   inspect_adb_window: {
     client: clientIdentity,

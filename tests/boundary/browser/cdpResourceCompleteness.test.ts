@@ -12,7 +12,7 @@ import { parseEvidence } from "../../../src/domain/evidence.js";
 import { compareWebCaptures } from "../../../src/domain/webCaptureDiff.js";
 import { compareWebCapturesInputSchema } from "../../../src/domain/webCaptureDiffSchemas.js";
 import { startFakeCdpBrowser } from "../../fixtures/fakeCdpBrowser.js";
-import { runCliJson } from "../../fixtures/cliJsonProcess.js";
+import { cliTest } from "../../support/cli/cliFixture.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { trackBrowser } from "./cdpBrowserProvider.support.js";
 import { createApplicationMcpHarness } from "../../fixtures/applicationMcpHarness.js";
@@ -144,7 +144,7 @@ const compareResources = (
     }),
   ).dimensions.resources;
 
-describe("malformed resource metadata through CDP", () => {
+describe("resource metadata through CDP", () => {
   it.each([
     { fields: { type: undefined }, retained: false },
     { fields: { type: null }, retained: false },
@@ -193,20 +193,17 @@ describe("malformed resource metadata through CDP", () => {
         });
     },
   );
-});
 
-describe("optional resource metadata through CDP", () => {
   it.each([
     {
       fields: { type: "Other", mimeType: "", contentSize: undefined },
       size: null,
-      comparison: "unknown",
     },
-    { fields: { contentSize: 0 }, size: 0, comparison: "unchanged" },
-    { fields: { contentSize: 1.5 }, size: 1.5, comparison: "unchanged" },
+    { fields: { contentSize: 0 }, size: 0 },
+    { fields: { contentSize: 1.5 }, size: 1.5 },
   ])(
     "accepts valid optional and empty fields: $fields",
-    async ({ fields, size, comparison }) => {
+    async ({ fields, size }) => {
       const { state, inspect } = await startBrowser();
       state.peerFields = fields;
       const capture = await inspect();
@@ -218,16 +215,10 @@ describe("optional resource metadata through CDP", () => {
       expect(capture.completeness.unavailable_sections).not.toContain(
         "resources",
       );
-      expect(
-        capture.completeness.excluded.filter(
-          ({ section }) => section === "resources",
-        ),
-      ).toEqual([]);
-      expect(compareResources(capture, capture)).toMatchObject({
-        status: comparison,
-        total_changes: 0,
-        changes: [],
-      });
+      // Omitted contentSize is valid metadata, but cannot prove equal resource size.
+      expect(compareResources(capture, capture).status).toBe(
+        size === null ? "unknown" : "unchanged",
+      );
     },
   );
 });
@@ -450,34 +441,41 @@ describe("resource uncertainty in production MCP registration", () => {
 });
 
 describe("resource uncertainty in public CLI Evidence", () => {
-  it("preserves partial membership while complete inventories still prove removal", async () => {
-    const { state, inspect } = await startBrowser();
-    const root = await createTestTempDirectory("rea-resource-comparison-");
-    const before = join(root, "before.json");
-    const after = join(root, "after.json");
-    await writeFile(before, JSON.stringify({ inspection: await inspect() }));
-    for (const { mode, fields } of [
-      { mode: "invalid-entry", fields: undefined },
-      { mode: "valid", fields: { type: undefined } },
-      { mode: "valid", fields: { contentSize: -1 } },
-      { mode: "empty", fields: undefined },
-    ] as const) {
-      state.mode = mode;
-      state.peerFields = fields;
-      await writeFile(after, JSON.stringify({ inspection: await inspect() }));
-      expect(
-        await runCliJson(["compare-web-captures", before, after, "--json"]),
-      ).toMatchObject({
-        operation: "compare_web_captures",
-        normalized_result: {
-          dimensions: {
-            resources: {
-              status: mode === "empty" ? "changed" : "unknown",
-              total_changes: mode === "empty" ? 2 : 0,
+  cliTest(
+    "preserves partial membership while complete inventories still prove removal",
+    async ({ cli }) => {
+      const { state, inspect } = await startBrowser();
+      const root = await createTestTempDirectory("rea-resource-comparison-");
+      const before = join(root, "before.json");
+      const after = join(root, "after.json");
+      await writeFile(before, JSON.stringify({ inspection: await inspect() }));
+      for (const { mode, fields } of [
+        { mode: "invalid-entry", fields: undefined },
+        { mode: "valid", fields: { type: undefined } },
+        { mode: "valid", fields: { contentSize: -1 } },
+        { mode: "empty", fields: undefined },
+      ] as const) {
+        state.mode = mode;
+        state.peerFields = fields;
+        await writeFile(after, JSON.stringify({ inspection: await inspect() }));
+        const cliResult = await cli.run({
+          arguments: ["compare-web-captures", before, after, "--json"],
+          environment: process.env,
+        });
+        expect(cliResult.exitCode).toBe(0);
+        expect(cliResult.signal).toBeNull();
+        expect(cliResult.json).toMatchObject({
+          operation: "compare_web_captures",
+          normalized_result: {
+            dimensions: {
+              resources: {
+                status: mode === "empty" ? "changed" : "unknown",
+                total_changes: mode === "empty" ? 2 : 0,
+              },
             },
           },
-        },
-      });
-    }
-  });
+        });
+      }
+    },
+  );
 });

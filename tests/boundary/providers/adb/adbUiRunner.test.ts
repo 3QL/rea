@@ -9,7 +9,6 @@ import {
 } from "../../../../src/adb/AdbUiRunner.js";
 import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
 import { adbUiInputSchemas } from "../../../../src/domain/adb/adbUiAnalysis.js";
-import type { AnalysisError } from "../../../../src/domain/analysisErrorBase.js";
 import { AnalysisOutputError } from "../../../../src/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
 import { parseEvidence } from "../../../../src/domain/evidence.js";
@@ -595,23 +594,15 @@ it("preserves a completed observation when acknowledgement fails and resolves cl
   expect(result.error.cleanupIncomplete).toBe(false);
 });
 
-/** Find a recovered refusal in the projected error both public adapters return. */
-const projectedRecoveredRefusals = (
-  error: AnalysisError,
-): ReadonlyArray<unknown> => {
-  const found: unknown[] = [];
-  const walk = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      value.forEach(walk);
-      return;
-    }
-    if (typeof value !== "object" || value === null) return;
-    const record = value as Record<string, unknown>;
-    if ("recovered_refusal" in record) found.push(record.recovered_refusal);
-    Object.values(record).forEach(walk);
-  };
-  walk(projectAnalysisError(error) as unknown as Record<string, unknown>);
-  return found;
+/** The runner's refusal must remain usable in the public error projection. */
+const recoveredRefusal = {
+  code: "unreadable_output",
+  message: "Selected element is no longer current",
+  details: {
+    operation: "perform_adb_ui_action",
+    reason: "stale_element",
+    diagnostics: { runner_failure: "stale_element" },
+  },
 };
 
 /** Run an action whose status reply never reached the host. */
@@ -1010,9 +1001,11 @@ it.each([
     await state.provider.close();
     expect(result.error.cleanupIncomplete).toBe(false);
     if (label === "a refused action") {
-      const refusals = projectedRecoveredRefusals(result.error);
-      expect(refusals).toHaveLength(1);
-      expect(JSON.stringify(refusals[0])).toContain("stale_element");
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        details: {
+          cleanup_history: { recovered_refusal: recoveredRefusal },
+        },
+      });
     } else
       expect(parseEvidence(result.error.partialObservation)).toMatchObject({
         evidence_id: expect.any(String),
@@ -1363,9 +1356,9 @@ it("retains a refusal recovered while cleaning up the interrupted request", asyn
   expect(result.error.partialObservation).toBeUndefined();
   expect(result.error.cleanupIncomplete).toBe(false);
   // The refusal is stated in the projected error the CLI and MCP return.
-  const refusals = projectedRecoveredRefusals(result.error);
-  expect(refusals).toHaveLength(1);
-  expect(JSON.stringify(refusals[0])).toContain("stale_element");
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    details: { diagnostics: { recovered_refusal: recoveredRefusal } },
+  });
   // The recovered request was released, so the next cleanup settles without work.
   await state.provider.close();
   expect(result.error.cleanupIncomplete).toBe(false);

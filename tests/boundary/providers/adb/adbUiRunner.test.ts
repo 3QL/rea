@@ -8,6 +8,7 @@ import {
   parseAdbUiReply,
 } from "../../../../src/adb/AdbUiRunner.js";
 import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
+import { cleanupOwnedProcessGroup } from "../../../../src/process/ProcessOwnership.js";
 import { adbUiInputSchemas } from "../../../../src/domain/adb/adbUiAnalysis.js";
 import { AnalysisOutputError } from "../../../../src/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
@@ -75,16 +76,7 @@ const header = {
   limitations: [],
 };
 
-async function fixture(
-  mode: Record<string, unknown> = {},
-  onLateUiEvidence?: (evidence: unknown) => void,
-) {
-  const workspace = await createTestWorkspace("rea-ui-transport-");
-  const config = workspace.path("mode.json");
-  await writeFile(config, JSON.stringify(mode));
-  const binary = await workspace.write(
-    "adb",
-    `#!${process.execPath}
+const adbFixtureSource = `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
 const root = __dirname;
@@ -170,9 +162,12 @@ if (request.operation === 'ping') {
 } else {
    if(!stream || !fs.existsSync(jobFile(request.request_id))) throw new Error('Input was not prepared');
     if(mode.body_refusal) {
-      const kind=mode.body_refusal==='capacity'?'capacity':'busy';
-      const reason=kind==='capacity'?'Unacknowledged UI request capacity exhausted':'Another UI request is active';
-      const encoded='REA_UI_V2:' + Buffer.from(JSON.stringify(frame(request.request_id,null,{kind,reason}))).toString('base64');
+       const kind=mode.body_refusal==='capacity'?'capacity':'busy';
+       const reason=kind==='capacity'?'Unacknowledged UI request capacity exhausted':'Another UI request is active';
+       const response=frame(request.request_id,null,{kind,reason});
+       if(mode.body_refusal_identity==='request') response.request_id='00000000-0000-4000-8000-000000000099';
+       if(mode.body_refusal_identity==='runner') response.instance_id='00000000-0000-4000-8000-000000000099';
+       const encoded='REA_UI_V2:' + (mode.body_refusal_identity==='malformed'?'not-json':Buffer.from(JSON.stringify(response)).toString('base64'));
      console.log(encoded);
      process.exit(0);
    }
@@ -195,8 +190,16 @@ if (request.operation === 'ping') {
   if(mode.kind==='malformed') console.log('REA_UI_V2:not-json');
   else reply({state:'accepted'});
 }
-`,
-  );
+`;
+
+async function fixture(
+  mode: Record<string, unknown> = {},
+  onLateUiEvidence?: (evidence: unknown) => void,
+) {
+  const workspace = await createTestWorkspace("rea-ui-transport-");
+  const config = workspace.path("mode.json");
+  await writeFile(config, JSON.stringify(mode));
+  const binary = await workspace.write("adb", adbFixtureSource);
   await chmod(binary, 0o755);
   const environment = {
     ...process.env,
@@ -277,6 +280,113 @@ it.each(
       calls.filter((name) => name === "perform_adb_ui_action"),
     ).toHaveLength(2);
     expect(calls).not.toContain("inspect_adb_ui");
+  },
+);
+
+it.each([
+  ...["busy", "capacity"].flatMap((kind) =>
+    [false, true].map((cancel) => ({ kind, cancel, identity: "matching" })),
+  ),
+  ...["request", "runner", "malformed"].map((identity) => ({
+    kind: "busy",
+    cancel: false,
+    identity,
+  })),
+])(
+  "retains a $identity $kind admission reply across denied host cleanup (cancel: $cancel)",
+  async ({ kind, cancel, identity }) => {
+    const { binary, environment, workspace, setMode } = await fixture({
+      body_refusal: kind,
+      body_refusal_identity: identity,
+    });
+    const controller = new AbortController();
+    const reason = new Error("cancel during admission command cleanup");
+    let denied = true;
+    let cleanupAttempts = 0;
+    const transport = new AdbUiRunner(environment, async (input) => {
+      const acquired = await spawnOwnedProviderProcess(input);
+      if (input.arguments[3] !== "-T") return acquired;
+      return {
+        ...acquired,
+        cleanup: async () => {
+          cleanupAttempts++;
+          if (denied) {
+            if (cancel) controller.abort(reason);
+            return { cleaned: false, reason: "controlled host cleanup denial" };
+          }
+          return (
+            acquired.cleanup?.() ?? cleanupOwnedProcessGroup(acquired.ownership)
+          );
+        },
+      };
+    });
+    onTestFinished(async () => {
+      denied = false;
+      await transport.close();
+    });
+    const request = {
+      operation: "perform_adb_ui_action" as const,
+      input: adbUiInputSchemas.perform_adb_ui_action.parse(actionInput),
+    };
+    const client = {
+      binary_path: binary,
+      path_source: "environment" as const,
+      version: "34.0.5-ui-fixture",
+      installed_path: binary,
+    };
+    const provider = {
+      id: "adb",
+      name: "ADB fixture",
+      version: client.version,
+    };
+    const result = await transport.execute(
+      request,
+      binary,
+      client,
+      provider,
+      controller.signal,
+    );
+    if (result.ok) throw new Error("Expected denied host cleanup");
+    expect(cleanupAttempts).toBeGreaterThan(1);
+    expect(result.error.cleanupIncomplete).toBe(true);
+    expect(transport.pendingResources).not.toEqual([]);
+    const projected = projectAnalysisError(result.error);
+    expect(projected.code).toBe("cleanup_incomplete");
+    if (identity === "matching") {
+      expect(projected).toMatchObject({
+        details: {
+          diagnostics: { primary_error: { code: "resource_constraint" } },
+        },
+      });
+      expect(JSON.stringify(projected)).toContain(
+        kind === "busy"
+          ? "Another UI request is active"
+          : "Unacknowledged UI request capacity exhausted",
+      );
+      expect(JSON.stringify(projected)).not.toMatch(
+        /may have completed|action_outcome|replay_safe/u,
+      );
+      if (cancel) {
+        expect(JSON.stringify(projected)).toContain("cancelled");
+        expect(
+          result.error.cleanupPrimary?.secondaryFailures.find(
+            (failure) => failure._tag === "AnalysisCancelledError",
+          )?.cause,
+        ).toBe(reason);
+      }
+    } else expect(projected.message).toContain("may have completed");
+    denied = false;
+    await setMode({});
+    expect(await transport.reconcile(request.operation)).toBeUndefined();
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(transport.pendingResources).toEqual([]);
+    if (identity === "matching") {
+      const next = await transport.execute(request, binary, client, provider);
+      if (!next.ok) throw next.error;
+      expect(await readFile(workspace.path("calls"), "utf8")).not.toContain(
+        '"inspect_adb_ui"',
+      );
+    }
   },
 );
 

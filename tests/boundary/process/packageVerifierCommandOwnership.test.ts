@@ -11,6 +11,46 @@ import { systemProcessOwnershipHost } from "../../../src/process/ProcessOwnershi
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { processTest } from "../../support/process/processFixture.js";
 
+processTest.skipIf(process.platform === "win32")(
+  "releases a cold source loader before verifying command cleanup",
+  async ({ processes }) => {
+    const commandsModule = pathToFileURL(
+      resolve("scripts/lib/verify-package-commands.mjs"),
+    ).href;
+    const verifierModule = pathToFileURL(
+      resolve("scripts/lib/verifier-run.mjs"),
+    ).href;
+    const result = await processes.run(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      import { mkdtemp, rm } from "node:fs/promises";
+      import { tmpdir } from "node:os";
+      import { join } from "node:path";
+      import { createPackageVerifierCommands } from ${JSON.stringify(commandsModule)};
+      import { createVerifierRun, completeVerifierRun } from ${JSON.stringify(verifierModule)};
+      const run = createVerifierRun();
+      const path = await mkdtemp(join(tmpdir(), "rea-cold-verifier-"));
+      const commands = await createPackageVerifierCommands({ workspace: { path, close: () => rm(path, { recursive: true, force: true }) } });
+      try {
+        await commands.exec(process.execPath, ["-e", "process.stdout.write('ok')"]);
+      } finally {
+        await commands.close();
+      }
+      console.log(JSON.stringify(await completeVerifierRun(run)));
+    `,
+      ],
+      { env: { ...process.env, TSX_DISABLE_CACHE: "1" }, timeoutMs: 20_000 },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      process_lineage: { status: "verified", descendants: [] },
+    });
+  },
+);
+
 const descendantSource = `
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const record = (entry) => appendFileSync(process.env.OWNER_EVENTS, JSON.stringify(entry) + "\\n");
@@ -81,6 +121,9 @@ processTest
     const sharedCommandsModule = pathToFileURL(
       resolve("scripts/lib/verify-commands.mjs"),
     ).href;
+    const sourceLoaderModule = pathToFileURL(
+      resolve("scripts/lib/verifier-source-loader.mjs"),
+    ).href;
     const cleanupModule = pathToFileURL(
       resolve("scripts/lib/verifier-cleanup.mjs"),
     ).href;
@@ -99,6 +142,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createPackageVerifierCommands } from ${JSON.stringify(commandsModule)};
 import { createVerifierCommands } from ${JSON.stringify(sharedCommandsModule)};
+import { importVerifierSource } from ${JSON.stringify(sourceLoaderModule)};
 import { createVerifierRun, completeVerifierRun } from ${JSON.stringify(lineageModule)};
 import { withVerifierCleanup, closeVerifierResources } from ${JSON.stringify(cleanupModule)};
 import { tsImport } from ${JSON.stringify(tsxModule)};
@@ -107,7 +151,7 @@ const workspaces = await Promise.all([0, 1].map(async index => ({
   path: await mkdtemp(join(${JSON.stringify(root)}, "scope-" + index + "-")),
   async close() { await rm(this.path, { recursive: true, force: true }); },
 })));
-let owners = [], output, lateValue, peerResult;
+let owners = [], output, lateValues, peerResult, releasePeer;
 await withVerifierCleanup(async () => {
   owners = await Promise.all([
     createPackageVerifierCommands({ workspace: workspaces[0] }),
@@ -118,19 +162,32 @@ await withVerifierCleanup(async () => {
     { timeout: 5000 },
   )));
   const compiler = createRequire(${JSON.stringify(tsxPackage)})("esbuild");
-  const peer = compiler.transform("export const peer: number = 7;", { loader: "ts" }).then(
-    value => ({ ok: true, code: value.code }),
+  let acknowledgePeer;
+  const peerReady = new Promise(resolve => { acknowledgePeer = resolve; });
+  const peerGate = new Promise(resolve => { releasePeer = resolve; });
+  const peer = compiler.build({
+    stdin: { contents: "export const peer: number = 7;", loader: "ts" },
+    write: false,
+    plugins: [{ name: "hold-peer", setup(build) {
+      build.onStart(async () => { acknowledgePeer(); await peerGate; });
+    } }],
+  }).then(
+    value => ({ ok: true, code: value.outputFiles[0].text }),
     cause => ({ ok: false, reason: cause.message }),
   );
+  await peerReady;
   await owners[0].close();
+  const tracked = await importVerifierSource(${JSON.stringify(pathToFileURL(lateSource).href)}, import.meta.url);
+  releasePeer();
   peerResult = await peer;
   const late = await tsImport(${JSON.stringify(pathToFileURL(lateSource).href)}, import.meta.url);
-  lateValue = late.value;
+  lateValues = [tracked.value, late.value];
 }, [async () => {
+  releasePeer?.();
   await closeVerifierResources(owners.map(owner => () => owner.close()));
   await closeVerifierResources(workspaces.map(workspace => () => workspace.close()));
 }]);
-console.log(JSON.stringify({ output: output.map(item => item.stdout), lateValue, peerResult, verifier: await completeVerifierRun(run) }));
+console.log(JSON.stringify({ output: output.map(item => item.stdout), lateValues, peerResult, verifier: await completeVerifierRun(run) }));
 `,
     );
     const result = await processes.run(process.execPath, [driver], {
@@ -141,7 +198,7 @@ console.log(JSON.stringify({ output: output.map(item => item.stdout), lateValue,
     expect(result.signal).toBeNull();
     expect(JSON.parse(result.stdout)).toMatchObject({
       output: ["0", "1"],
-      lateValue: 42,
+      lateValues: [42, 42],
       peerResult: { ok: true, code: expect.stringContaining("peer = 7") },
       verifier: { process_lineage: { status: "verified", descendants: [] } },
     });

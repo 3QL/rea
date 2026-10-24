@@ -193,7 +193,9 @@ application state is left as-is.
   when cleanup recovers the envelope or its forget acknowledgement is lost.
 - Host stdin handoff alone does not prove action admission. A matching runner's
   immediate refusal (such as `busy` or `capacity`) stays definitive even if
-  prepared-slot cleanup needs a retry. It does not report a possible mutation or
+  host-command or prepared-slot cleanup needs a retry. Admission is recorded from
+  the complete matching reply before host cleanup, including cancellation during
+  that cleanup. It does not report a possible mutation or
   require a fresh inspection before the next action. A missing, malformed or
   mismatched reply still leaves submission uncertain and retains replay safeguards.
 - Cancellation settles host commands, cancels only the owned remote request,

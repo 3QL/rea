@@ -38,6 +38,7 @@ import {
 } from "../process/OwnedCommand.js";
 import {
   spawnOwnedProviderProcess,
+  type ProviderProcessSnapshot,
   type ProviderProcessSupervisor,
 } from "../process/ProviderProcess.js";
 import { resolveWindowsProviderExecutable } from "../process/WindowsProviderExecutable.js";
@@ -279,6 +280,7 @@ export class AdbUiRunner {
     signal?: AbortSignal,
     submission?: RemoteRequest,
     socketPath?: string,
+    observeReply?: (reply: Reply) => void,
   ): Promise<Reply> {
     const json = JSON.stringify(payload);
     if (Buffer.byteLength(json) > REQUEST_BYTES)
@@ -294,8 +296,9 @@ export class AdbUiRunner {
       );
     const encoded = Buffer.from(json).toString("base64");
     const runId = randomUUID();
+    let received: Result<Reply, AnalysisError> | undefined;
     try {
-      const result = await runOwnedCommand(
+      await runOwnedCommand(
         {
           command: binary,
           arguments: adbArguments(
@@ -347,7 +350,22 @@ export class AdbUiRunner {
             else this.#pending.delete(submission.requestId);
           },
         },
-        { timeoutMs, diagnosticBytes: CAPTURE_BYTES },
+        {
+          timeoutMs,
+          diagnosticBytes: CAPTURE_BYTES,
+          observeCompleted: (result) => {
+            // Complete output is authoritative before host cleanup can fail or
+            // be cancelled. Decode once and keep admission separate from cleanup.
+            received = this.#readReply(
+              result,
+              operation,
+              serial,
+              payload,
+              socketPath,
+            );
+            if (received.ok) observeReply?.(received.value);
+          },
+        },
         {
           ...(signal === undefined ? {} : { signal }),
           ...(submission === undefined || socketPath === undefined
@@ -366,40 +384,12 @@ export class AdbUiRunner {
         },
       );
       await this.#settleCommands();
-      const parsed = parseAdbUiReply(
-        result.stdout.text,
-        socketPath === undefined ? "control" : "input",
-      );
-      if (!parsed.ok) {
-        const options = {
-          capturedOutput: {
-            stdout: result.stdout.text,
-            stderr: result.stderr.text,
-            truncated: false,
-          },
-        };
-        if (parsed.error.kind === "unavailable")
-          throw new AnalysisCapabilityUnavailableError(
-            "adb",
-            operation,
-            `${parsed.error.reason}. Install and start the UI Automator runner on ${serial}; see docs/adb-ui-automation.md.`,
-            options,
-          );
-        if (parsed.error.kind === "capacity")
-          throw new AnalysisResourceConstraintError(
-            operation,
-            "transport",
-            parsed.error.reason,
-            { max_response_bytes: RESPONSE_BYTES },
-            options,
-          );
-        throw new AnalysisProtocolError(parsed.error.reason, options);
-      }
-      if (parsed.value.request_id !== payload.request_id)
+      if (received === undefined)
         throw new AnalysisProtocolError(
-          "UI reply belongs to a different request",
+          "ADB command has no completed UI reply",
         );
-      return parsed.value;
+      if (!received.ok) throw received.error;
+      return received.value;
     } catch (cause) {
       if (cause instanceof AnalysisError) throw cause;
       const capturedOutput =
@@ -441,6 +431,53 @@ export class AdbUiRunner {
         );
       throw new AnalysisProtocolError("ADB UI transport failed", options);
     }
+  }
+
+  #readReply(
+    result: ProviderProcessSnapshot,
+    operation: string,
+    serial: string,
+    payload: Readonly<Record<string, unknown>>,
+    socketPath: string | undefined,
+  ): Result<Reply, AnalysisError> {
+    const parsed = parseAdbUiReply(
+      result.stdout.text,
+      socketPath === undefined ? "control" : "input",
+    );
+    if (!parsed.ok) {
+      const options = {
+        capturedOutput: {
+          stdout: result.stdout.text,
+          stderr: result.stderr.text,
+          truncated: false,
+        },
+      };
+      if (parsed.error.kind === "unavailable")
+        return err(
+          new AnalysisCapabilityUnavailableError(
+            "adb",
+            operation,
+            `${parsed.error.reason}. Install and start the UI Automator runner on ${serial}; see docs/adb-ui-automation.md.`,
+            options,
+          ),
+        );
+      if (parsed.error.kind === "capacity")
+        return err(
+          new AnalysisResourceConstraintError(
+            operation,
+            "transport",
+            parsed.error.reason,
+            { max_response_bytes: RESPONSE_BYTES },
+            options,
+          ),
+        );
+      return err(new AnalysisProtocolError(parsed.error.reason, options));
+    }
+    if (parsed.value.request_id !== payload.request_id)
+      return err(
+        new AnalysisProtocolError("UI reply belongs to a different request"),
+      );
+    return parsed;
   }
 
   /** The provider drains accepted work before closing this transport. */
@@ -691,6 +728,7 @@ export class AdbUiRunner {
     let primary: AnalysisError;
     let owned: RemoteRequest | undefined;
     let observed: UiObservation | undefined;
+    let admissionFailure: AnalysisError | undefined;
     // A returned outcome is final; a later recovery can only add provenance.
     // The caller holds the composed cleanup failure, not the primary, so a late
     // recovery attaches to whichever error this request actually produced.
@@ -804,6 +842,7 @@ export class AdbUiRunner {
       if (!reply.ok) this.#pending.delete(owned.requestId);
       else {
         z.strictObject({ state: z.literal("prepared") }).parse(reply.result);
+        const submitted = owned;
         reply = await this.#send(
           launch,
           serial,
@@ -814,18 +853,41 @@ export class AdbUiRunner {
           signal,
           owned,
           owned.socketPath,
+          (reply) => {
+            // Only the selected request and runner can decide admission. The
+            // transport already checked the request id while decoding output.
+            if (reply.instance_id !== submitted.instanceId) return;
+            if (!reply.ok) {
+              if (submitted.actionAdmission !== undefined)
+                submitted.actionAdmission = "refused";
+              admissionFailure = this.#runnerFailure(
+                request,
+                submitted,
+                reply.error!,
+                signal,
+              );
+              return;
+            }
+            const accepted = z
+              .strictObject({ state: z.literal("accepted") })
+              .safeParse(reply.result);
+            if (!accepted.success)
+              admissionFailure = new AnalysisOutputError(
+                request.operation,
+                "Invalid UI runner admission response",
+                { cause: accepted.error },
+              );
+            else if (submitted.actionAdmission !== undefined)
+              submitted.actionAdmission = "accepted";
+          },
         );
       }
       if (reply.instance_id !== owned.instanceId)
         throw new AnalysisProtocolError(
           "UI runner restarted while a request was outstanding",
         );
-      if (!reply.ok && owned.actionAdmission !== undefined)
-        owned.actionAdmission = "refused";
+      if (admissionFailure !== undefined) throw admissionFailure;
       if (reply.ok) {
-        z.strictObject({ state: z.literal("accepted") }).parse(reply.result);
-        if (owned.actionAdmission !== undefined)
-          owned.actionAdmission = "accepted";
         const deadline = AbortSignal.timeout(request.input.timeout_ms + 10000);
         const pollSignal =
           signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
@@ -941,6 +1003,12 @@ export class AdbUiRunner {
                 "Invalid UI runner response",
                 { cause },
               );
+    }
+    if (admissionFailure !== undefined && admissionFailure !== primary) {
+      admissionFailure.retainSecondaryFailure(primary, {
+        admission_transport_failure: projectAnalysisError(primary),
+      });
+      primary = admissionFailure;
     }
     if (
       owned !== undefined &&
@@ -1075,56 +1143,8 @@ export class AdbUiRunner {
     reply: Reply,
     signal?: AbortSignal,
   ): UiObservation {
-    if (!reply.ok) {
-      const failure = reply.error!;
-      if (failure.kind === "timeout")
-        throw new AnalysisTimeoutError(
-          request.operation,
-          request.input.timeout_ms,
-        );
-      if (failure.kind === "cancelled")
-        throw new AnalysisCancelledError(request.operation, {
-          cause: signal?.aborted ? signal.reason : failure.reason,
-        });
-      if (failure.kind === "busy" || failure.kind === "capacity")
-        throw new AnalysisResourceConstraintError(
-          request.operation,
-          "capacity",
-          failure.reason,
-          null,
-        );
-      if (failure.kind === "unsupported")
-        throw new AnalysisCapabilityUnavailableError(
-          "adb",
-          request.operation,
-          failure.reason,
-          {
-            diagnostics: {
-              runner_failure: failure.kind,
-              runner_instance: owned.instanceId,
-              selected_scope: {
-                serial: request.input.serial,
-                package: request.input.package,
-                display_id: request.input.display_id,
-                ...(request.input.window_id === undefined
-                  ? {}
-                  : { window_id: request.input.window_id }),
-              },
-            },
-            remediationAction:
-              "Select a device and display supported by this operation: secondary-display inspection requires Android 11 or later, and key events require display 0.",
-          },
-        );
-      throw new AnalysisOutputError(request.operation, failure.kind, {
-        userMessage: failure.reason,
-        diagnostics: {
-          runner_failure: failure.kind,
-          runner_instance: owned.instanceId,
-        },
-        remediationAction:
-          "Inspect or find the current UI again, then select an enabled, visible element from that snapshot.",
-      });
-    }
+    if (!reply.ok)
+      throw this.#runnerFailure(request, owned, reply.error!, signal);
     const parsed = adbUiObservationSchemas[request.operation].safeParse(
       reply.result,
     );
@@ -1147,5 +1167,60 @@ export class AdbUiRunner {
         "UI observation does not match the requested scope",
       );
     return observation;
+  }
+
+  #runnerFailure(
+    request: AdbUiRequest,
+    owned: RemoteRequest,
+    failure: NonNullable<Reply["error"]>,
+    signal?: AbortSignal,
+  ): AnalysisError {
+    if (failure.kind === "timeout")
+      return new AnalysisTimeoutError(
+        request.operation,
+        request.input.timeout_ms,
+      );
+    if (failure.kind === "cancelled")
+      return new AnalysisCancelledError(request.operation, {
+        cause: signal?.aborted ? signal.reason : failure.reason,
+      });
+    if (failure.kind === "busy" || failure.kind === "capacity")
+      return new AnalysisResourceConstraintError(
+        request.operation,
+        "capacity",
+        failure.reason,
+        null,
+      );
+    if (failure.kind === "unsupported")
+      return new AnalysisCapabilityUnavailableError(
+        "adb",
+        request.operation,
+        failure.reason,
+        {
+          diagnostics: {
+            runner_failure: failure.kind,
+            runner_instance: owned.instanceId,
+            selected_scope: {
+              serial: request.input.serial,
+              package: request.input.package,
+              display_id: request.input.display_id,
+              ...(request.input.window_id === undefined
+                ? {}
+                : { window_id: request.input.window_id }),
+            },
+          },
+          remediationAction:
+            "Select a device and display supported by this operation: secondary-display inspection requires Android 11 or later, and key events require display 0.",
+        },
+      );
+    return new AnalysisOutputError(request.operation, failure.kind, {
+      userMessage: failure.reason,
+      diagnostics: {
+        runner_failure: failure.kind,
+        runner_instance: owned.instanceId,
+      },
+      remediationAction:
+        "Inspect or find the current UI again, then select an enabled, visible element from that snapshot.",
+    });
   }
 }

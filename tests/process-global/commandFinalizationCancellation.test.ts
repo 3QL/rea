@@ -215,24 +215,25 @@ it.each([
         });
       });
     };
-    // The service uses a prepared owner whose projection is a lexical call.
-    // Observe that actual owner while preserving its admission and budget state.
+    // Intercept the prepared owner, whose project method keeps its admission
+    // budget and calls the domain projector lexically rather than by export.
     const originalPrepare = analysisView.prepareAnalysisViewProjection;
-    type Projection = ReturnType<typeof originalPrepare>["project"];
-    let projected: ReturnType<Projection> | undefined;
-    const project = vi.fn((result: ReturnType<Projection>) => {
-      projected = result;
-      if (phase === "projection") queueInterrupt();
-      return result;
-    });
+    type Projection = ReturnType<typeof originalPrepare>;
+    let projected: ReturnType<Projection["project"]> | undefined;
+    const project = vi
+      .fn<(parent: Parameters<Projection["project"]>[0]) => void>()
+      .mockName("preparedProjection.project");
     vi.spyOn(analysisView, "prepareAnalysisViewProjection").mockImplementation(
       (...args) => {
-        const prepared = originalPrepare(...args);
-        const originalProject = prepared.project.bind(prepared);
-        vi.spyOn(prepared, "project").mockImplementation((...input) =>
-          project(originalProject(...input)),
-        );
-        return prepared;
+        const projection = originalPrepare(...args);
+        const originalProject = projection.project;
+        vi.spyOn(projection, "project").mockImplementation((parent) => {
+          project(parent);
+          projected = originalProject.call(projection, parent);
+          if (phase === "projection") queueInterrupt();
+          return projected;
+        });
+        return projection;
       },
     );
     const originalResolve = evidenceInputResolver.resolveEvidenceInput;

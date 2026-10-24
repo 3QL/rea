@@ -59,7 +59,10 @@ const composeDeepBinarySession = (
   const hopper = new HopperProvider(config, logger, environment);
   const ghidra = new GhidraProvider(config, logger, environment);
   const ida = new IdaProvider(config, environment);
-  const kuna = new KunaProvider(environment);
+  const kuna = new KunaProvider(environment, {
+    regexMatchingDeadline: config.regexMatchingDeadline,
+    regexWorkerHeapRequest: config.regexWorkerHeapRequest,
+  });
   const laneProviders = [hopper, ghidra, ida, kuna];
   assertBinaryLaneProviderIds(
     laneProviders.map((provider) => provider.identity().id),

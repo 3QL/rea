@@ -15,6 +15,7 @@ import { tsImport } from "tsx/esm/api";
 
 import { PRODUCT_IDENTITY } from "../dist/identity.js";
 import { createAgentEvaluationCommands } from "./lib/agent-evaluation-commands.mjs";
+import { assertAgentEvaluationReportPassed } from "./lib/agent-evaluation-report-gate.mjs";
 import {
   closeVerifierResources,
   withVerifierCleanup,
@@ -44,14 +45,13 @@ const {
   ).href,
   import.meta.url,
 );
-const { assertAgentEvaluationsPassed, summarizeFactualCorrectness } =
-  await tsImport(
-    new URL(
-      "../tests/evaluation/model-evals/AgentEvaluationReport.ts",
-      import.meta.url,
-    ).href,
+const { summarizeFactualCorrectness } = await tsImport(
+  new URL(
+    "../tests/evaluation/model-evals/AgentEvaluationReport.ts",
     import.meta.url,
-  );
+  ).href,
+  import.meta.url,
+);
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verifierRun = createVerifierRun();
@@ -414,7 +414,7 @@ await withVerifierCleanup(
       await writeFile(resolve(reportPath), encoded);
     }
 
-    assertAgentEvaluationsPassed(results);
+    assertAgentEvaluationReportPassed(results);
   },
   // Even a deliberately retained fixture directory must never retain auth.
   [

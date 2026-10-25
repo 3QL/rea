@@ -18,16 +18,14 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
-import type {
-  ExecutionOptions,
-  ProviderAvailability,
-} from "../application/AnalysisProvider.js";
 import { awaitPredecessor } from "../application/awaitPredecessor.js";
-import { providerConfigurationRefusal } from "../domain/providerConfigurationRefusal.js";
 import {
+  type ExecutionOptions,
+  type ProviderAvailability,
   createAnalysisExecution,
   type AnalysisExecution,
 } from "../application/AnalysisProvider.js";
+import { providerConfigurationRefusal } from "../domain/providerConfigurationRefusal.js";
 import type {
   AdbDisplayNumericIssues,
   AdbDisplayPartialObservation,

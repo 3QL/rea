@@ -27,7 +27,14 @@ import {
 const it = test.skipIf(process.platform === "win32");
 const instance = "00000000-0000-4000-8000-000000000001";
 const snapshotId = "00000000-0000-4000-8000-000000000002";
+const otherSnapshotId = "00000000-0000-4000-8000-000000000003";
 const scope = { serial: "emulator-5554", package: "com.example.app" };
+const actionInput = {
+  ...scope,
+  snapshot_id: snapshotId,
+  element_id: "0",
+  action: { kind: "tap" },
+} as const;
 const runner = {
   package_name: "dev.rea.uiautomator",
   instance_id: instance,
@@ -173,18 +180,21 @@ if (request.operation === 'ping') {
    }
    snapshot.package_name = request.input.package;
    snapshot.display_id = request.input.display_id;
-   snapshot.window_id_filter = request.input.window_id ?? null;
+    snapshot.window_id_filter = request.input.window_id ?? null;
+    snapshot.id = request.input.snapshot_id ?? snapshot.id;
    node.window_id = request.input.window_id ?? node.window_id;
    snapshot.windows = snapshot.windows.map(window => ({...window, id:node.window_id, display_id:snapshot.display_id}));
-   if(mode.kind === 'wrong-package') snapshot.package_name = 'com.other.app';
+    if(mode.kind === 'wrong-package') snapshot.package_name = 'com.other.app';
+    if(mode.snapshot_override) Object.assign(snapshot,mode.snapshot_override);
   let result;
   if(request.operation === 'inspect_adb_ui') result={runner,snapshot:{...snapshot,nodes:[node]}};
-  else if(request.operation === 'find_adb_ui_elements') result={runner,snapshot,matches:[node],related_nodes:[],total_matches:1,offset:0,next_offset:null,coverage:'complete',freshness:'captured'};
+   else if(request.operation === 'find_adb_ui_elements') result={runner,snapshot,matches:[node].slice(request.input.offset,request.input.offset+request.input.limit),related_nodes:[],total_matches:1,offset:request.input.offset,next_offset:null,coverage:'complete',freshness:request.input.snapshot_id?'retained_snapshot':'captured'};
   else if(request.operation === 'perform_adb_ui_action') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
-     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:mode.after_snapshot ? {...snapshot,nodes:[node],...mode.after_snapshot} : null,observation_failure:null};
+      result={runner,before:snapshot,selected_element:request.input.action.kind==='key_event'?null:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:request.input.action.kind==='set_text'?true:null,can_scroll_more:null,after:mode.after_snapshot ? {...snapshot,nodes:[node],...mode.after_snapshot} : null,observation_failure:null};
    } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
-   if(result && mode.runner_override) result.runner={...runner,...mode.runner_override};
+    if(result && mode.runner_override) result.runner={...runner,...mode.runner_override};
+    if(result && mode.observation_override) Object.assign(result,mode.observation_override);
    if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:typeof mode.completion_capacity==='string'?mode.completion_capacity:'capacity',reason:mode.capacity_reason??'Response exceeds the Binder transport budget'})));
     else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:mode.unsupported_kind??'unsupported',reason:mode.unsupported_reason})));
   else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
@@ -636,29 +646,142 @@ it.each([
   },
 );
 
-it("retains matching runner and before/after scope identities through MCP", async () => {
-  const { provider } = await fixture({ after_snapshot: {} });
+it.each(["tap", "key_event"] as const)(
+  "retains matching runner and before/after scope identities for %s through MCP",
+  async (kind) => {
+    const { provider } = await fixture({
+      after_snapshot: { id: otherSnapshotId },
+    });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    const response = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: {
+        ...scope,
+        snapshot_id: snapshotId,
+        display_id: kind === "key_event" ? 0 : 1,
+        window_id: 7,
+        ...(kind === "key_event"
+          ? { action: { kind, key_code: 4 } }
+          : { element_id: "0", action: { kind } }),
+      },
+    });
+    expect(response.isError, JSON.stringify(response)).not.toBe(true);
+    const snapshotScope = {
+      package_name: scope.package,
+      display_id: kind === "key_event" ? 0 : 1,
+      window_id_filter: 7,
+    };
+    expect(
+      parseEvidence(response.structuredContent).normalized_result,
+    ).toMatchObject({
+      runner,
+      before: { ...snapshotScope, id: snapshotId },
+      after: { ...snapshotScope, id: otherSnapshotId },
+      selected_element: kind === "key_event" ? null : { id: "0" },
+    });
+  },
+);
+
+it.each([
+  {
+    name: "retained snapshot ID",
+    operation: "find_adb_ui_elements",
+    input: { ...scope, selector: {}, snapshot_id: snapshotId },
+    mode: { snapshot_override: { id: otherSnapshotId } },
+  },
+  {
+    name: "retained snapshot freshness",
+    operation: "find_adb_ui_elements",
+    input: { ...scope, selector: {}, snapshot_id: snapshotId },
+    mode: { observation_override: { freshness: "captured" } },
+  },
+  {
+    name: "fresh capture selection",
+    operation: "find_adb_ui_elements",
+    input: { ...scope, selector: {} },
+    mode: { observation_override: { freshness: "retained_snapshot" } },
+  },
+  {
+    name: "retained page offset",
+    operation: "find_adb_ui_elements",
+    input: { ...scope, selector: {}, snapshot_id: snapshotId, offset: 1 },
+    mode: { observation_override: { offset: 0 } },
+  },
+  {
+    name: "action before snapshot ID",
+    operation: "perform_adb_ui_action",
+    input: actionInput,
+    mode: { snapshot_override: { id: otherSnapshotId } },
+  },
+  {
+    name: "selected element ID",
+    operation: "perform_adb_ui_action",
+    input: actionInput,
+    mode: {
+      observation_override: { selected_element: { ...node, id: "other" } },
+    },
+  },
+  {
+    name: "missing selected element",
+    operation: "perform_adb_ui_action",
+    input: actionInput,
+    mode: { observation_override: { selected_element: null } },
+  },
+  {
+    name: "key event with an element selection",
+    operation: "perform_adb_ui_action",
+    input: {
+      ...scope,
+      snapshot_id: snapshotId,
+      action: { kind: "key_event", key_code: 4 },
+    },
+    mode: { observation_override: { selected_element: node } },
+  },
+])(
+  "rejects mismatched $name through MCP",
+  async ({ operation, input, mode }) => {
+    const { provider } = await fixture(mode);
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    const response = await harness.client.callTool({
+      name: operation,
+      arguments: input,
+    });
+    const error = parseMcpToolError(response).error;
+    expect(error.code).toBe("unreadable_output");
+    expect(error.details?.partial_observation).toBeUndefined();
+  },
+);
+
+it("binds retained find pages to the selected snapshot without claiming fresh capture", async () => {
+  const { provider } = await fixture();
   const harness = await createApplicationMcpHarness({
     serverOptions: { adbDeviceAnalysis: provider },
-    configureServer: (server, session) =>
-      registerAdbUiExperiment(server, provider, session),
   });
   const response = await harness.client.callTool({
-    name: "perform_adb_ui_action",
-    arguments: { ...actionInput, display_id: 1, window_id: 7 },
+    name: "find_adb_ui_elements",
+    arguments: {
+      ...scope,
+      selector: {},
+      snapshot_id: otherSnapshotId,
+      offset: 1,
+    },
   });
   expect(response.isError, JSON.stringify(response)).not.toBe(true);
-  const snapshotScope = {
-    package_name: scope.package,
-    display_id: 1,
-    window_id_filter: 7,
-  };
   expect(
     parseEvidence(response.structuredContent).normalized_result,
   ).toMatchObject({
-    runner,
-    before: snapshotScope,
-    after: snapshotScope,
+    snapshot: { id: otherSnapshotId },
+    offset: 1,
+    freshness: "retained_snapshot",
+    matches: [],
   });
 });
 
@@ -838,6 +961,16 @@ it.each([
   { kind: "wrong-package", mode: { kind: "wrong-package" } },
   { kind: "wrong-runner", mode: { runner_override: { version: "0.3.0" } } },
   { kind: "wrong-after", mode: { after_snapshot: { display_id: 1 } } },
+  {
+    kind: "wrong-snapshot",
+    mode: { snapshot_override: { id: otherSnapshotId } },
+  },
+  {
+    kind: "wrong-element",
+    mode: {
+      observation_override: { selected_element: { ...node, id: "other" } },
+    },
+  },
 ])(
   "classifies the $kind action report before cancellation during final acknowledgement",
   async ({ kind, mode }) => {
@@ -955,13 +1088,6 @@ const runLostStatusAction = async (
   if (result.ok) throw new Error("Expected the offline status failure");
   return result;
 };
-
-const actionInput = {
-  ...scope,
-  snapshot_id: snapshotId,
-  element_id: "0",
-  action: { kind: "tap" },
-} as const;
 
 it("reserves ADB admission before UI client discovery on the same MCP connection", async () => {
   const { provider, workspace } = await fixture();
@@ -1413,6 +1539,16 @@ it.each([
     mode: { runner_override: { package_name: "dev.other.uiautomator" } },
   },
   { name: "after-snapshot", mode: { after_snapshot: { window_id_filter: 7 } } },
+  {
+    name: "snapshot selection",
+    mode: { snapshot_override: { id: otherSnapshotId } },
+  },
+  {
+    name: "element selection",
+    mode: {
+      observation_override: { selected_element: { ...node, id: "other" } },
+    },
+  },
 ])(
   "rejects mismatched $name evidence recovered by a later cleanup and guards replay",
   async ({ mode }) => {

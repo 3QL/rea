@@ -1,6 +1,7 @@
 import {
   nativeAddressListSchema,
   nativeObservationSourceSchemas,
+  containingProcedureResolutionSchema,
 } from "../domain/native/nativeObservation.js";
 import {
   nativeObservationSummaryViewResultSchemas,
@@ -22,14 +23,17 @@ import { nativeByteReadSchema } from "../domain/native/nativeByteRead.js";
 import { analysisDetailOutputSchemaOf } from "./analysisDetail.js";
 import {
   functionDossierSchema,
-  analysisBookmarkSchema,
   functionInstructionWindowSchema,
+} from "../domain/native/functionDossier.js";
+import {
+  analysisBookmarkSchema,
+  nativeInventoryRowsSchemas,
+} from "../domain/native/nativeInventory.js";
+import {
   referenceEdgeSchema,
   unresolvedCallSchema,
-  procedureIdentitySchema,
-  containingProcedureResolutionSchema,
-} from "../domain/hopperValues.js";
-import { nativeInventoryRowsSchemas } from "../domain/native/nativeInventory.js";
+} from "../domain/native/nativeReference.js";
+import { procedureIdentitySchema } from "../domain/native/procedureInfo.js";
 import { z } from "zod";
 import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import { byteSearchResultSchema } from "../domain/native/bytePattern.js";

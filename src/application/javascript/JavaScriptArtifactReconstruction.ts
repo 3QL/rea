@@ -1,4 +1,6 @@
+import { artifactNameForClassification } from "../../domain/artifactNameSelection.js";
 import type { AnalysisSettingValues } from "../../domain/analysisSettings.js";
+import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import {
   DEFAULT_ASAR_HEADER_ADMISSION,
   type AsarHeaderAdmission,
@@ -103,20 +105,31 @@ export const reconstructJavaScriptArtifact = async (
       await checkpointJavaScriptAnalysis(signal);
     };
     abortIfNeeded(signal);
-    const { path, metadata } = await resolveSelectedInput(input.input_path);
-    const format = resolveFormat(path, metadata, input);
-    const snapshot = await scanCanonicalArtifactInventoryInScope(path, {
-      resourceScope: scope,
-      signal,
-      integrity: { mode: input.integrity_policy },
-      asarHeaderAdmission,
-    });
+    const selectedPath = absoluteCallerPath(input.input_path);
+    const { path, metadata } = await resolveSelectedInput(selectedPath);
+    const format = resolveFormat(path, metadata, input, selectedPath);
+    const snapshot = await scanCanonicalArtifactInventoryInScope(
+      path,
+      {
+        resourceScope: scope,
+        signal,
+        integrity: { mode: input.integrity_policy },
+        asarHeaderAdmission,
+      },
+      undefined,
+      selectedPath,
+    );
     if (snapshot.manifest.root_format !== format)
       throw new ArtifactReaderFailure(
         "format",
         `Artifact inventory classified ${path} as ${snapshot.manifest.root_format}, not ${format}`,
       );
-    const reader = createReader(path, format, asarHeaderAdmission);
+    const reader = createReader(
+      path,
+      format,
+      asarHeaderAdmission,
+      selectedPath,
+    );
     const readerOwner = {
       kind: "reader" as const,
       reader,
@@ -483,10 +496,14 @@ const resolveFormat = (
   path: string,
   metadata: Stats,
   input: AnalyzeJavaScriptApplicationInput,
+  selectedPath: string,
 ): "asar" | "directory" => {
   const observed = metadata.isDirectory()
     ? "directory"
-    : metadata.isFile() && path.toLowerCase().endsWith(".asar")
+    : metadata.isFile() &&
+        artifactNameForClassification(selectedPath, path)
+          .toLowerCase()
+          .endsWith(".asar")
       ? "asar"
       : undefined;
   if (observed === undefined)

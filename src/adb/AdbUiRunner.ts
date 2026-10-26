@@ -1194,6 +1194,38 @@ export class AdbUiRunner {
       throw new AnalysisProtocolError(
         "UI observation does not match the requested scope",
       );
+    const selectedSnapshotId =
+      "snapshot_id" in request.input ? request.input.snapshot_id : undefined;
+    const selectedSnapshot =
+      "before" in observation ? observation.before : observation.snapshot;
+    if (
+      selectedSnapshotId !== undefined &&
+      selectedSnapshot.id !== selectedSnapshotId
+    )
+      throw new AnalysisProtocolError(
+        "UI observation does not belong to the selected snapshot",
+      );
+    if ("freshness" in observation) {
+      const expectedFreshness =
+        selectedSnapshotId === undefined ? "captured" : "retained_snapshot";
+      const expectedOffset =
+        request.operation === "find_adb_ui_elements" ? request.input.offset : 0;
+      if (
+        observation.freshness !== expectedFreshness ||
+        observation.offset !== expectedOffset
+      )
+        throw new AnalysisProtocolError(
+          "UI query does not match the requested freshness and page",
+        );
+    }
+    if (
+      request.operation === "perform_adb_ui_action" &&
+      "selected_element" in observation &&
+      observation.selected_element?.id !== request.input.element_id
+    )
+      throw new AnalysisProtocolError(
+        "UI action does not belong to the selected element",
+      );
     return observation;
   }
 

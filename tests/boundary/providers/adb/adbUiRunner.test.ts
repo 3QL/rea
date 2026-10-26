@@ -171,14 +171,20 @@ if (request.operation === 'ping') {
      console.log(encoded);
      process.exit(0);
    }
-  if(mode.kind === 'wrong-package') snapshot.package_name = 'com.other.app';
+   snapshot.package_name = request.input.package;
+   snapshot.display_id = request.input.display_id;
+   snapshot.window_id_filter = request.input.window_id ?? null;
+   node.window_id = request.input.window_id ?? node.window_id;
+   snapshot.windows = snapshot.windows.map(window => ({...window, id:node.window_id, display_id:snapshot.display_id}));
+   if(mode.kind === 'wrong-package') snapshot.package_name = 'com.other.app';
   let result;
   if(request.operation === 'inspect_adb_ui') result={runner,snapshot:{...snapshot,nodes:[node]}};
   else if(request.operation === 'find_adb_ui_elements') result={runner,snapshot,matches:[node],related_nodes:[],total_matches:1,offset:0,next_offset:null,coverage:'complete',freshness:'captured'};
   else if(request.operation === 'perform_adb_ui_action') {
     node.password = Boolean(mode.password); node.text_redacted = node.password; if(node.password) node.text=null;
-    result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:null,observation_failure:null};
-  } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
+     result={runner,before:snapshot,selected_element:node,dispatch_attempted:true,action_completed:true,action_error:null,text_verified:true,can_scroll_more:null,after:mode.after_snapshot ? {...snapshot,nodes:[node],...mode.after_snapshot} : null,observation_failure:null};
+   } else if(request.operation !== 'wait_for_adb_ui' || mode.kind !== 'hang') throw new Error('unmodeled UI operation');
+   if(result && mode.runner_override) result.runner={...runner,...mode.runner_override};
    if(mode.completion_capacity) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:typeof mode.completion_capacity==='string'?mode.completion_capacity:'capacity',reason:mode.capacity_reason??'Response exceeds the Binder transport budget'})));
     else if(mode.unsupported_reason) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:mode.unsupported_kind??'unsupported',reason:mode.unsupported_reason})));
   else if(mode.action_refusal) fs.writeFileSync(jobFile(request.request_id),JSON.stringify(frame(request.request_id,null,{kind:'stale_element',reason:'Selected element is no longer current'})));
@@ -584,6 +590,78 @@ it.each(["unavailable", "malformed", "wrong-id", "wrong-package"])(
   },
 );
 
+it.each([
+  { field: "package_name", value: "dev.other.uiautomator" },
+  { field: "instance_id", value: "00000000-0000-4000-8000-000000000099" },
+  { field: "version", value: "0.3.0" },
+  { field: "ui_automator_version", value: "2.5.0" },
+  { field: "sdk_int", value: 35 },
+])(
+  "refuses an observation whose runner $field differs from ping through MCP",
+  async ({ field, value }) => {
+    const { provider } = await fixture({ runner_override: { [field]: value } });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+    });
+    const response = await harness.client.callTool({
+      name: "inspect_adb_ui",
+      arguments: scope,
+    });
+    const error = parseMcpToolError(response).error;
+    expect(error.code).toBe("unreadable_output");
+    expect(error.details?.partial_observation).toBeUndefined();
+  },
+);
+
+it.each([
+  { field: "package_name", value: "com.other.app" },
+  { field: "display_id", value: 0 },
+  { field: "window_id_filter", value: null },
+])(
+  "refuses an action after-snapshot with mismatched $field through MCP",
+  async ({ field, value }) => {
+    const { provider } = await fixture({ after_snapshot: { [field]: value } });
+    const harness = await createApplicationMcpHarness({
+      serverOptions: { adbDeviceAnalysis: provider },
+      configureServer: (server, session) =>
+        registerAdbUiExperiment(server, provider, session),
+    });
+    const response = await harness.client.callTool({
+      name: "perform_adb_ui_action",
+      arguments: { ...actionInput, display_id: 1, window_id: 7 },
+    });
+    const error = parseMcpToolError(response).error;
+    expect(error.code).toBe("unreadable_output");
+    expect(error.details?.partial_observation).toBeUndefined();
+  },
+);
+
+it("retains matching runner and before/after scope identities through MCP", async () => {
+  const { provider } = await fixture({ after_snapshot: {} });
+  const harness = await createApplicationMcpHarness({
+    serverOptions: { adbDeviceAnalysis: provider },
+    configureServer: (server, session) =>
+      registerAdbUiExperiment(server, provider, session),
+  });
+  const response = await harness.client.callTool({
+    name: "perform_adb_ui_action",
+    arguments: { ...actionInput, display_id: 1, window_id: 7 },
+  });
+  expect(response.isError, JSON.stringify(response)).not.toBe(true);
+  const snapshotScope = {
+    package_name: scope.package,
+    display_id: 1,
+    window_id_filter: 7,
+  };
+  expect(
+    parseEvidence(response.structuredContent).normalized_result,
+  ).toMatchObject({
+    runner,
+    before: snapshotScope,
+    after: snapshotScope,
+  });
+});
+
 it("redacts explicit sensitive inputs and producer-marked password controls without changing ordinary text", async () => {
   const { service, setMode } = await fixture();
   for (const [sensitive, password, expected] of [
@@ -755,10 +833,15 @@ it("retains failed remote cleanup for a later close retry", async () => {
   });
 });
 
-it.each(["valid", "wrong-package"])(
-  "classifies the %s action report before cancellation during final acknowledgement",
-  async (kind) => {
-    const { binary, environment } = await fixture({ kind });
+it.each([
+  { kind: "valid", mode: { after_snapshot: {} } },
+  { kind: "wrong-package", mode: { kind: "wrong-package" } },
+  { kind: "wrong-runner", mode: { runner_override: { version: "0.3.0" } } },
+  { kind: "wrong-after", mode: { after_snapshot: { display_id: 1 } } },
+])(
+  "classifies the $kind action report before cancellation during final acknowledgement",
+  async ({ kind, mode }) => {
+    const { binary, environment } = await fixture(mode);
     const controller = new AbortController();
     const reason = new Error("cancelled during UI acknowledgement");
     const transport = new AdbUiRunner(environment, async (input) => {
@@ -1323,6 +1406,52 @@ it("records a terminal observation recovered after the original response", async
     },
   });
 });
+
+it.each([
+  {
+    name: "runner",
+    mode: { runner_override: { package_name: "dev.other.uiautomator" } },
+  },
+  { name: "after-snapshot", mode: { after_snapshot: { window_id_filter: 7 } } },
+])(
+  "rejects mismatched $name evidence recovered by a later cleanup and guards replay",
+  async ({ mode }) => {
+    const recorded: unknown[] = [];
+    const state = await fixture(
+      { ...mode, status_offline: true, cancel_offline: true },
+      (evidence) => recorded.push(evidence),
+    );
+    const first = await runLostStatusAction(state);
+    expect(first.error.partialObservation).toBeUndefined();
+    expect(first.error.cleanupIncomplete).toBe(true);
+    await state.setMode({});
+    const replay = await state.service.execute(
+      "perform_adb_ui_action",
+      actionInput,
+    );
+    if (replay.ok)
+      throw new Error("Unverified action outcome must prevent replay");
+    expect(projectAnalysisError(replay.error)).toMatchObject({
+      code: "unreadable_output",
+      details: {
+        diagnostics: {
+          prior_action_outcome: "unknown",
+          current_request_dispatched: false,
+        },
+      },
+    });
+    expect(recorded).toEqual([]);
+    expect(first.error.partialObservation).toBeUndefined();
+    expect(replay.error.partialObservation).toBeUndefined();
+    const calls = (await readFile(state.workspace.path("calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).operation);
+    expect(
+      calls.filter((operation) => operation === "perform_adb_ui_action"),
+    ).toHaveLength(1);
+  },
+);
 
 it("returns a recovered action before admitting a new UI action", async () => {
   const state = await fixture({ status_offline: true, cancel_offline: true });

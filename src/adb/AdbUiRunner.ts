@@ -93,8 +93,8 @@ interface RemoteRequest {
   readonly targetPackage: string;
   readonly displayId: number;
   readonly windowId: number | undefined;
-  readonly packageName: string;
-  readonly instanceId: string;
+  /** Complete identity admitted by ping, shared by transport and result validation. */
+  readonly runner: Readonly<z.infer<typeof adbUiRunnerIdentitySchema>>;
   readonly requestId: string;
   readonly operation: string;
   readonly socketPath: string;
@@ -232,7 +232,7 @@ export class AdbUiRunner {
       ...this.#commands.values(),
       ...[...this.#pending.values()].map(
         (request) =>
-          `adb-ui:${request.serial}:${request.packageName}:${request.instanceId}:${request.requestId}`,
+          `adb-ui:${request.serial}:${request.runner.package_name}:${request.runner.instance_id}:${request.requestId}`,
       ),
     ];
   }
@@ -566,19 +566,19 @@ export class AdbUiRunner {
           const reply = await this.#send(
             request.binary,
             request.serial,
-            request.packageName,
+            request.runner.package_name,
             request.operation,
             {
               protocol: PROTOCOL,
               operation: "cancel",
               request_id: randomUUID(),
-              instance_id: request.instanceId,
+              instance_id: request.runner.instance_id,
               cancel_request_id: request.requestId,
             },
             CLEANUP_MS,
             signal,
           );
-          if (reply.instance_id !== request.instanceId)
+          if (reply.instance_id !== request.runner.instance_id)
             throw new Error("Runner identity changed during cancellation");
           if (!reply.ok) {
             if (reply.error?.kind !== "capacity")
@@ -649,8 +649,8 @@ export class AdbUiRunner {
         failures.push({
           request_id: request.requestId,
           serial: request.serial,
-          runner_package: request.packageName,
-          runner_instance: request.instanceId,
+          runner_package: request.runner.package_name,
+          runner_instance: request.runner.instance_id,
           runner_user: 0,
           socket_path: request.socketPath,
           reason: cause instanceof Error ? cause.message : String(cause),
@@ -673,7 +673,7 @@ export class AdbUiRunner {
   #rememberCompletion(request: RemoteRequest, reply: Reply): RemoteCompletion {
     if (
       reply.request_id !== request.requestId ||
-      reply.instance_id !== request.instanceId
+      reply.instance_id !== request.runner.instance_id
     )
       throw new AnalysisProtocolError(
         "Completed UI result belongs to a different request or runner",
@@ -698,19 +698,19 @@ export class AdbUiRunner {
     const reply = await this.#send(
       request.binary,
       request.serial,
-      request.packageName,
+      request.runner.package_name,
       request.operation,
       {
         protocol: PROTOCOL,
         operation: "forget",
         request_id: randomUUID(),
-        instance_id: request.instanceId,
+        instance_id: request.runner.instance_id,
         target_request_id: request.requestId,
       },
       CLEANUP_MS,
       signal,
     );
-    if (reply.instance_id !== request.instanceId || !reply.ok)
+    if (reply.instance_id !== request.runner.instance_id || !reply.ok)
       throw new AnalysisProtocolError(
         "Could not release the completed UI request",
       );
@@ -800,8 +800,7 @@ export class AdbUiRunner {
         targetPackage: request.input.package,
         displayId: request.input.display_id,
         windowId: request.input.window_id,
-        packageName,
-        instanceId: identity.instance_id,
+        runner: identity,
         requestId: randomUUID(),
         operation: request.operation,
         socketPath: hello.data.socket_path,
@@ -809,7 +808,7 @@ export class AdbUiRunner {
       const payload = {
         protocol: PROTOCOL,
         request_id: owned.requestId,
-        instance_id: owned.instanceId,
+        instance_id: owned.runner.instance_id,
         operation: request.operation,
         input: request.input,
       };
@@ -829,7 +828,7 @@ export class AdbUiRunner {
         {
           protocol: PROTOCOL,
           request_id: owned.requestId,
-          instance_id: owned.instanceId,
+          instance_id: owned.runner.instance_id,
           operation: "prepare",
           target_operation: request.operation,
         },
@@ -837,7 +836,7 @@ export class AdbUiRunner {
         signal,
         owned,
       );
-      if (reply.instance_id !== owned.instanceId)
+      if (reply.instance_id !== owned.runner.instance_id)
         throw new AnalysisProtocolError(
           "UI runner changed during request preparation",
         );
@@ -858,7 +857,7 @@ export class AdbUiRunner {
           (reply) => {
             // Only the selected request and runner can decide admission. The
             // transport already checked the request id while decoding output.
-            if (reply.instance_id !== submitted.instanceId) return;
+            if (reply.instance_id !== submitted.runner.instance_id) return;
             if (!reply.ok) {
               if (submitted.actionAdmission !== undefined)
                 submitted.actionAdmission = "refused";
@@ -884,7 +883,7 @@ export class AdbUiRunner {
           },
         );
       }
-      if (reply.instance_id !== owned.instanceId)
+      if (reply.instance_id !== owned.runner.instance_id)
         throw new AnalysisProtocolError(
           "UI runner restarted while a request was outstanding",
         );
@@ -904,14 +903,14 @@ export class AdbUiRunner {
                 protocol: PROTOCOL,
                 operation: "status",
                 request_id: randomUUID(),
-                instance_id: owned.instanceId,
+                instance_id: owned.runner.instance_id,
                 target_request_id: owned.requestId,
               },
               10000,
               pollSignal,
             );
             if (
-              status.instance_id === owned.instanceId &&
+              status.instance_id === owned.runner.instance_id &&
               status.error?.kind === "capacity"
             )
               throw new AnalysisResourceConstraintError(
@@ -920,7 +919,7 @@ export class AdbUiRunner {
                 status.error.reason,
                 { max_response_bytes: RESPONSE_BYTES },
               );
-            if (status.instance_id !== owned.instanceId || !status.ok)
+            if (status.instance_id !== owned.runner.instance_id || !status.ok)
               throw new AnalysisProtocolError(
                 status.error?.reason ??
                   "UI runner changed while awaiting completion",
@@ -1165,13 +1164,32 @@ export class AdbUiRunner {
         { cause: parsed.error },
       );
     const observation = parsed.data;
-    const snapshot =
-      "before" in observation ? observation.before : observation.snapshot;
+    const expected = owned.runner;
     if (
-      observation.runner.instance_id !== owned.instanceId ||
-      snapshot.package_name !== request.input.package ||
-      snapshot.display_id !== request.input.display_id ||
-      snapshot.window_id_filter !== (request.input.window_id ?? null)
+      observation.runner.package_name !== expected.package_name ||
+      observation.runner.instance_id !== expected.instance_id ||
+      observation.runner.version !== expected.version ||
+      observation.runner.ui_automator_version !==
+        expected.ui_automator_version ||
+      observation.runner.sdk_int !== expected.sdk_int
+    )
+      throw new AnalysisProtocolError(
+        "UI observation runner identity does not match the selected endpoint",
+      );
+    const snapshots =
+      "before" in observation
+        ? [
+            observation.before,
+            ...(observation.after === null ? [] : [observation.after]),
+          ]
+        : [observation.snapshot];
+    if (
+      snapshots.some(
+        (snapshot) =>
+          snapshot.package_name !== request.input.package ||
+          snapshot.display_id !== request.input.display_id ||
+          snapshot.window_id_filter !== (request.input.window_id ?? null),
+      )
     )
       throw new AnalysisProtocolError(
         "UI observation does not match the requested scope",
@@ -1196,7 +1214,7 @@ export class AdbUiRunner {
             "After outstanding work settles, restart the operator-owned UI runner before adding more sensitive values. Actions that do not add sensitive values remain available.",
           diagnostics: {
             runner_failure: failure.kind,
-            runner_instance: owned.instanceId,
+            runner_instance: owned.runner.instance_id,
           },
         },
       );
@@ -1227,7 +1245,7 @@ export class AdbUiRunner {
         {
           diagnostics: {
             runner_failure: failure.kind,
-            runner_instance: owned.instanceId,
+            runner_instance: owned.runner.instance_id,
             ...(failure.kind === "unsupported_key_code" &&
             request.operation === "perform_adb_ui_action" &&
             request.input.action.kind === "key_event"
@@ -1252,7 +1270,7 @@ export class AdbUiRunner {
       userMessage: failure.reason,
       diagnostics: {
         runner_failure: failure.kind,
-        runner_instance: owned.instanceId,
+        runner_instance: owned.runner.instance_id,
       },
       remediationAction:
         "Inspect or find the current UI again, then select an enabled, visible element from that snapshot.",

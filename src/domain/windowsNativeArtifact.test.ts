@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
+import { windowsNativeArtifactBytes } from "./windowsNativeArtifact.fixture.js";
 import {
   createWindowsNativeManifest,
   parseWindowsNativeManifest,
@@ -7,12 +8,7 @@ import {
 } from "./windowsNativeArtifact.js";
 
 const fixture = () => {
-  const bytes = Buffer.alloc(128);
-  bytes.write("MZ");
-  bytes.writeUInt32LE(64, 0x3c);
-  bytes.write("PE\0\0", 64, "ascii");
-  bytes.writeUInt16LE(0x8664, 68);
-  bytes.writeUInt16LE(0x20b, 88);
+  const bytes = windowsNativeArtifactBytes();
   const manifest = {
     packageVersion: "1.0.0",
     platform: "win32",
@@ -113,6 +109,29 @@ it.each(["offset", "signature", "machine", "optional magic"])(
     expect(validateWindowsNativeArtifact(parsed.value, bytes)).toMatchObject({
       ok: false,
       error: { message: expect.stringContaining("PE32+") },
+    });
+  },
+);
+
+it.each([0, 1, 65, 0xffff])(
+  "rejects an unavailable declared optional header of %i bytes",
+  (length) => {
+    const { bytes } = fixture();
+    bytes.writeUInt16LE(length, 84);
+    expect(createWindowsNativeManifest("1.0.0", bytes)).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("PE32+") },
+    });
+  },
+);
+
+it.each([2, 32, 63, 64])(
+  "admits PE32+ identity in a present declared header of %i bytes",
+  (length) => {
+    const { bytes } = fixture();
+    bytes.writeUInt16LE(length, 84);
+    expect(createWindowsNativeManifest("1.0.0", bytes)).toMatchObject({
+      ok: true,
     });
   },
 );

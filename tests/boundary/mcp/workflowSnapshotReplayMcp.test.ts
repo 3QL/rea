@@ -1,3 +1,4 @@
+import { projectCliAnalysisResult } from "../../../src/cli/projectCliAnalysisResult.js";
 import { parseConfig } from "../../../src/config/parseConfig.js";
 import { access, chmod, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -347,7 +348,7 @@ describe("MCP composed workflow snapshot replay", () => {
       "binary_overview",
       {},
       { snapshotPath },
-    );
+    ).then(projectCliAnalysisResult);
 
     expect(output).not.toHaveProperty("caller_input_path");
     expect(replay).toEqual({ ...output, caller_input_path: targetPath });

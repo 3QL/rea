@@ -274,8 +274,8 @@ it("checks trailer credentials before hidden metadata blocks analysis and withho
     expect(error.details?.partial_observation).toEqual({
       kind: "file-snapshot-hash",
       path,
-      bytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
     });
   }
   const opaqueReply = await call("inspect_web_network_capture", {
@@ -893,8 +893,8 @@ it.each([
     expect(error.details.partial_observation).toEqual({
       kind: "file-snapshot-hash",
       path,
-      bytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
     });
     expect(mcpFailure).not.toHaveProperty("normalized_result");
     expect(mcpFailure.error.details?.partial_observation).toEqual(

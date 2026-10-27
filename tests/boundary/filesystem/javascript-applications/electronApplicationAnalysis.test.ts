@@ -430,7 +430,7 @@ const expectElectronSummary = (result: Reconstruction): void => {
     ipc: {
       literal_channels: 5,
       dynamic_channel_operations: 2,
-      // Opaque native imports leave these renderer application owners unproven.
+      // Retained module gaps leave preload/renderer application ownership unknown.
       renderer_transmissions: 7,
       paired_renderer_transmissions: 0,
       ambiguous_renderer_transmissions: 7,
